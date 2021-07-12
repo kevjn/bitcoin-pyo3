@@ -1,0 +1,19 @@
+[package]
+name = "lib"
+version = "0.1.0"
+
+[lib]
+name = "lib"
+crate-type = ["cdylib"]
+
+[dependencies]
+num-bigint = { version = "0.2.2" }
+num-traits = "0.2"
+num-integer = "0.1"
+num = "0.4"
+lazy_static = "1.4.0"
+
+[dependencies.cpython]
+version = "0.5"
+features = ["extension-module"]
+
