@@ -1,4 +1,5 @@
 use pyo3::PyNumberProtocol;
+use pyo3::PyObjectProtocol;
 use pyo3::prelude::*;
 
 use num::bigint::BigInt;
@@ -22,7 +23,7 @@ lazy_static! {
 }
 
 #[pymodule]
-fn bitcoin(py: Python, m: &PyModule) -> PyResult<()> {
+fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__doc__", "This module is implemented in Rust.")?;
     m.add_class::<Point>()?;
 
@@ -43,6 +44,13 @@ impl Point {
     #[new]
     fn new(x: BigInt, y: BigInt) -> Self {
         Point { x, y }
+    }
+}
+
+#[pyproto]
+impl PyObjectProtocol for Point {
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("<Point at x={}, y={}>", self.x, self.y))
     }
 }
 
