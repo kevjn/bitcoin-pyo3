@@ -1,7 +1,6 @@
-extern crate cpython;
-use cpython::{PyResult, Python, py_module_initializer, py_fn, PyBytes};
+use pyo3::PyNumberProtocol;
+use pyo3::prelude::*;
 
-extern crate num;
 use num::bigint::BigInt;
 use num::Integer;
 use num::One;
@@ -13,22 +12,53 @@ lazy_static! {
     // Constants for bitcoin elliptic curve (secp256k1)
     static ref P: BigInt = 
         BigInt::parse_bytes(b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", 16).unwrap();
+
+    // Generator point
+    static ref G: Point = 
+        Point {
+            x: BigInt::parse_bytes(b"79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798", 16).unwrap(),
+            y: BigInt::parse_bytes(b"483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8", 16).unwrap()
+        };
 }
 
-py_module_initializer!(lib, |py, m| {
-    m.add(py, "__doc__", "This module is implemented in Rust.")?;
-    m.add(py, "ecc_mul", py_fn!(py, ecc_mul(x: &[u8], y: &[u8], k: &[u8])))?;
+#[pymodule]
+fn bitcoin(py: Python, m: &PyModule) -> PyResult<()> {
+    m.add("__doc__", "This module is implemented in Rust.")?;
+    m.add_class::<Point>()?;
 
     Ok(())
-});
+}
 
+#[pyclass]
 #[derive(Clone)]
 struct Point {
+    #[pyo3(get)]
     x: BigInt,
+    #[pyo3(get)]
     y: BigInt
 }
 
+#[pymethods]
+impl Point {
+    #[new]
+    fn new(x: BigInt, y: BigInt) -> Self {
+        Point { x, y }
+    }
+}
+
+#[pyproto]
+impl PyNumberProtocol for Point {
+    fn __add__(p: Point, q: Point) -> Self {
+        ecc_add(&p, &q)
+    }
+
+    fn __mul__(p: Point, k: BigInt) -> Self {
+        ecc_mul(p, k)
+    }
+}
+
 fn modinv(n: &BigInt, p: &BigInt) -> BigInt {
+    // TODO: use binary exponentiation for modinv
     if p.is_one() { return BigInt::one() }
 
     let (mut a, mut m, mut x, mut inv) = (n.clone(), p.clone(), BigInt::zero(), BigInt::one());
@@ -63,32 +93,20 @@ fn ecc_add(p: &Point, q: &Point) -> Point {
     Point {x: rx, y: ry}
 }
 
-fn ecc_mul(_py: Python, x: &[u8], y: &[u8], k: &[u8]) -> PyResult<(PyBytes, PyBytes)> {
-
-    let p: Point = Point {
-        x: BigInt::parse_bytes(x, 10).unwrap(),
-        y: BigInt::parse_bytes(y, 10).unwrap()
-    };
-
-    let mut n: Point = p.clone();
+fn ecc_mul(mut p: Point, mut k: BigInt) -> Point {
     let mut q: Option<Point> = None;
-
-    let mut k = BigInt::parse_bytes(k, 10).unwrap();
 
     while !k.is_zero() {
         if k.is_odd() {
             q = match q {
-                None => Some(n.clone()),
-                _ => Some(ecc_add(&n, &q.unwrap()))
+                None => Some(p.clone()),
+                _ => Some(ecc_add(&p, &q.unwrap()))
             }
         }
 
-        n = ecc_add(&n, &n);
+        p = ecc_add(&p, &p);
 
         k >>= 1;
     }
-    let result = q.unwrap();
-
-    Ok( (PyBytes::new(_py, &result.x.to_signed_bytes_le()), 
-         PyBytes::new(_py, &result.y.to_signed_bytes_le())) )
+    q.unwrap()
 }

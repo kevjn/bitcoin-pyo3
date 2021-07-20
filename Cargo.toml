@@ -1,9 +1,10 @@
 [package]
-name = "lib"
+name = "bitcoin"
 version = "0.1.0"
+edition = "2018"
 
 [lib]
-name = "lib"
+name = "bitcoin"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -13,7 +14,6 @@ num-integer = "0.1"
 num = "0.4"
 lazy_static = "1.4.0"
 
-[dependencies.cpython]
-version = "0.5"
-features = ["extension-module"]
-
+[dependencies.pyo3]
+version = "0.14.1"
+features = ["extension-module", "num-bigint"]
