@@ -2,10 +2,18 @@ use pyo3::PyNumberProtocol;
 use pyo3::PyObjectProtocol;
 use pyo3::prelude::*;
 
+use pyo3::types::PyBytes;
+use num::ToPrimitive;
+
+// maybe replace with https://docs.rs/crypto-bigint/0.2.2/crypto_bigint/index.html
 use num::bigint::BigInt;
 use num::Integer;
 use num::One;
 use num::Zero;
+
+// Hashing
+use sha2::{Sha256, Digest};
+use ripemd160::{Ripemd160};
 
 #[macro_use]
 extern crate lazy_static;
@@ -34,7 +42,7 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
 #[derive(Clone)]
 struct Point {
     #[pyo3(get)]
-    x: BigInt,
+    x: BigInt, // 32 bytes = 256 bits
     #[pyo3(get)]
     y: BigInt
 }
@@ -44,6 +52,26 @@ impl Point {
     #[new]
     fn new(x: BigInt, y: BigInt) -> Self {
         Point { x, y }
+    }
+
+    fn encode(&self, py: Python) -> PyObject {
+        // return the compressed SEC bytes encoding of the point
+        PyBytes::new(py, &encode(self)).into()
+    }
+
+    fn address(&self) -> PyResult<String> {
+        // encode Point (public key) into bytes with the prepended version (0x6f for test network)
+        let mut pkb_hash: Vec<u8> = vec![0x6f];
+        pkb_hash.extend(hash160(&encode(self)));
+
+        // checksum is the first 4 bytes
+        let checksum = &hash256(&pkb_hash)[..4];
+
+        // append to get the full 25-byte bitcoin address
+        pkb_hash.extend(checksum);
+
+        // return the b58 encoded address
+        Ok(b58encode(&pkb_hash))
     }
 }
 
@@ -117,4 +145,63 @@ fn ecc_mul(mut p: Point, mut k: BigInt) -> Point {
         k >>= 1;
     }
     q.unwrap()
+}
+
+fn encode(p: &Point) -> Vec<u8> {
+    let mut prefix = if p.y.is_even() {
+        b"\x02".to_vec()
+    } else {
+        b"\x03".to_vec()
+    };
+    let mut point = p.x.to_signed_bytes_le();
+    point.resize(32, 0);
+    point.reverse(); // switch to big endian
+
+    prefix.extend(point);
+    assert_eq!(prefix.len(), 33);
+    prefix
+}
+
+const B58ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+fn b58encode(bytes: &[u8]) -> String {
+    // Base256-to-Base58 conversion
+    // version is 1 byte, pkb_hash 20 bytes, checksum 4 bytes
+    assert_eq!(bytes.len(), 25);
+
+    // TODO: count leading zero bytes
+
+    let mut string: Vec<char> = Vec::new();
+    let mut n = BigInt::from_signed_bytes_be(bytes);
+    while n > BigInt::one() {
+        let (div, idx) = n.div_rem(&BigInt::from(58));
+        n = div;
+        string.push(B58ALPHABET.as_bytes()[idx.to_usize().unwrap()] as char);
+    }
+
+    string.reverse();
+    string.into_iter().collect()
+}
+
+fn hash160(bytes: &[u8]) -> [u8; 20] {
+    // sha256
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let bytes = hasher.finalize();
+
+    // ripemd160
+    let mut hasher = Ripemd160::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+fn hash256(bytes: &[u8]) -> [u8; 32] {
+    // sha256 2x
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let bytes = hasher.finalize();
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
 }
