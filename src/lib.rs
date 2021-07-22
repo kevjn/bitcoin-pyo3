@@ -34,6 +34,9 @@ lazy_static! {
 fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__doc__", "This module is implemented in Rust.")?;
     m.add_class::<Point>()?;
+    m.add_class::<Script>()?;
+
+    m.add_function(wrap_pyfunction!(hash160, m)?)?;
 
     Ok(())
 }
@@ -90,6 +93,55 @@ impl PyNumberProtocol for Point {
 
     fn __mul__(p: Point, k: BigInt) -> Self {
         ecc_mul(p, k)
+    }
+}
+
+#[derive(Clone, Debug)]
+#[derive(FromPyObject)]
+enum Command {
+    Operation(u8),
+    Element(Vec<u8>)
+}
+
+#[pyclass]
+struct Script {
+    commands: Vec<Command>
+}
+
+#[pymethods]
+impl Script {
+    #[new]
+    fn new(commands: Vec<Command>) -> Self {
+        Script { commands }
+    }
+
+    fn encode(&self, py: Python) -> PyObject {
+        let mut bytes: Vec<u8> = Vec::new();
+        // Operations get encoded as a single byte
+        // Elements get encoded as encoding length + element
+        for cmd in self.commands.iter() {
+            match cmd {
+                Command::Operation(x) => bytes.extend_from_slice(&x.to_le_bytes()),
+                Command::Element(x) => { 
+                    bytes.extend_from_slice(&(x.len() as u8).to_le_bytes()); 
+                    bytes.extend(x) 
+                }
+            };
+        }
+
+        // prepend the encoded length of the script
+        let mut prefix: Vec<u8> = Vec::new();
+        prefix.extend_from_slice(&(bytes.len() as u8).to_le_bytes());
+        prefix.extend(bytes);
+
+        PyBytes::new(py, &prefix).into()
+    }
+}
+
+#[pyproto]
+impl PyObjectProtocol for Script {
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("<Script with commands={:?}>", self.commands))
     }
 }
 
@@ -183,6 +235,7 @@ fn b58encode(bytes: &[u8]) -> String {
     string.into_iter().collect()
 }
 
+#[pyfunction]
 fn hash160(bytes: &[u8]) -> [u8; 20] {
     // sha256
     let mut hasher = Sha256::new();
