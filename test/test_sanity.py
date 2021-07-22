@@ -48,15 +48,40 @@ def test_encode_big_point():
 
 
 def test_generate_bitcoin_addr():
-    secret_key = int.from_bytes(b'Hello world', 'big')
     # Generator point
     G = bitcoin.Point(
         x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
         y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
     )
+
+    secret_key = int.from_bytes(b'Hello world', 'big')
     public_key = G * secret_key
 
     # Generate our bitcoin address
     address = public_key.address()
 
     assert address == 'mtuFXC3oACRqVMMqN32L5VG7ZCbaE7aZxi'
+
+def test_encode_output_script():
+    secret_key = int.from_bytes(b'Hello world', 'big')
+    public_key = common.G * secret_key
+
+    s1 = common.Script([
+        common.Opcode.DUP, 
+        common.Opcode.HASH160, 
+        common.hash160(public_key.encode()),
+        common.Opcode.EQUALVERIFY, 
+        common.Opcode.CHECKSIG
+    ])
+
+    G = bitcoin.Point(
+        x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+        y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+    )
+
+    secret_key = int.from_bytes(b'Hello world', 'big')
+    public_key = G * secret_key
+
+    s2 = bitcoin.Script([118, 169, bitcoin.hash160(public_key.encode()), 136, 172])
+
+    assert s1.encode() == s2.encode()
