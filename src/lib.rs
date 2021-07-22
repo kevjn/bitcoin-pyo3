@@ -121,17 +121,17 @@ impl Script {
         // Elements get encoded as encoding length + element
         for cmd in self.commands.iter() {
             match cmd {
-                Command::Operation(x) => bytes.extend_from_slice(&x.to_le_bytes()),
+                Command::Operation(x) => bytes.push(*x),
                 Command::Element(x) => { 
-                    bytes.extend_from_slice(&(x.len() as u8).to_le_bytes()); 
-                    bytes.extend(x) 
+                    bytes.push(x.len() as u8);
+                    bytes.extend(x);
                 }
             };
         }
 
         // prepend the encoded length of the script
         let mut prefix: Vec<u8> = Vec::new();
-        prefix.extend_from_slice(&(bytes.len() as u8).to_le_bytes());
+        prefix.push(bytes.len() as u8);
         prefix.extend(bytes);
 
         PyBytes::new(py, &prefix).into()
