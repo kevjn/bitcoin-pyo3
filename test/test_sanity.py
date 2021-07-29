@@ -46,6 +46,37 @@ def test_encode_big_point():
     assert len(G1.encode()) == len(G2.encode())
     assert G1.encode() == G2.encode()
 
+    G1 = G1 * 123
+    G2 = G2 * 123
+
+    assert len(G1.encode()) == len(G2.encode())
+    assert G1.encode() == G2.encode()
+
+    G1 = G1 * 123
+    G2 = G2 * 123
+
+    assert len(G1.encode()) == len(G2.encode())
+    assert G1.encode() == G2.encode()
+
+
+def test_encode_decode_point():
+    p = bitcoin.Point(
+        x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+        y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+    )
+
+    q = bitcoin.Point.decode(p.encode())
+
+    assert p.x == q.x
+    assert p.y == q.y
+
+    p = p * 123
+
+    q = bitcoin.Point.decode(p.encode())
+
+    assert p.x == q.x
+    assert p.y == q.y
+
 
 def test_generate_bitcoin_addr():
     # Generator point
