@@ -3,10 +3,13 @@ use pyo3::PyObjectProtocol;
 use pyo3::prelude::*;
 
 use pyo3::types::PyBytes;
+use pyo3::types::PyType;
 use num::ToPrimitive;
 
 // maybe replace with https://docs.rs/crypto-bigint/0.2.2/crypto_bigint/index.html
 use num::bigint::BigInt;
+use num::bigint::Sign;
+use num::pow::pow;
 use num::Integer;
 use num::One;
 use num::Zero;
@@ -58,8 +61,23 @@ impl Point {
     }
 
     fn encode(&self, py: Python) -> PyObject {
-        // return the compressed SEC bytes encoding of the point
+        // return the compressed SEC (Standards for Efficient Cryptography) bytes encoding of the point
         PyBytes::new(py, &encode(self)).into()
+    }
+
+    #[classmethod]
+    fn decode(cls: &PyType, sec: &[u8]) -> Self {
+        let (prefix, elements) = sec.split_first().unwrap();
+        let x = BigInt::from_bytes_be(Sign::Plus, elements);
+
+        // solve y^2 = x^3 + 7 (mod P) for y
+        let mut y: BigInt = (x.modpow(&BigInt::from(3u32), &*P) + 7u32) % &*P;
+        y = y.modpow(&(&*P + 1u32).div_floor(&BigInt::from(4u32)), &*P);
+        if y.is_even() != (prefix == &2u8) {
+            y = &*P - y; // flip if needed
+        }
+
+        Point { x, y }
     }
 
     fn address(&self) -> PyResult<String> {
