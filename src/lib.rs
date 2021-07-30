@@ -3,13 +3,11 @@ use pyo3::PyObjectProtocol;
 use pyo3::prelude::*;
 
 use pyo3::types::PyBytes;
-use pyo3::types::PyType;
 use num::ToPrimitive;
 
 // maybe replace with https://docs.rs/crypto-bigint/0.2.2/crypto_bigint/index.html
 use num::bigint::BigInt;
 use num::bigint::Sign;
-use num::pow::pow;
 use num::Integer;
 use num::One;
 use num::Zero;
@@ -25,6 +23,9 @@ lazy_static! {
     static ref P: BigInt = 
         BigInt::parse_bytes(b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", 16).unwrap();
 
+    static ref N: BigInt = 
+        BigInt::parse_bytes(b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16).unwrap();
+
     // Generator point
     static ref G: Point = 
         Point {
@@ -38,6 +39,7 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__doc__", "This module is implemented in Rust.")?;
     m.add_class::<Point>()?;
     m.add_class::<Script>()?;
+    m.add_class::<Signature>()?;
 
     m.add_function(wrap_pyfunction!(hash160, m)?)?;
 
@@ -65,8 +67,8 @@ impl Point {
         PyBytes::new(py, &encode(self)).into()
     }
 
-    #[classmethod]
-    fn decode(cls: &PyType, sec: &[u8]) -> Self {
+    #[staticmethod]
+    fn decode(sec: &[u8]) -> Self {
         let (prefix, elements) = sec.split_first().unwrap();
         let x = BigInt::from_bytes_be(Sign::Plus, elements);
 
@@ -122,8 +124,121 @@ enum Command {
 }
 
 #[pyclass]
+#[derive(Clone)]
 struct Script {
     commands: Vec<Command>
+}
+
+#[pyclass]
+struct Signature {
+    #[pyo3(get)]
+    r: BigInt,
+    #[pyo3(get)]
+    s: BigInt
+}
+
+#[pymethods]
+impl Signature {
+    #[new]
+    fn new(r: BigInt, s: BigInt) -> Self {
+        Signature { r, s }
+    }
+
+    fn encode(&self, py: Python) -> PyObject {
+        let mut rbin = self.r.to_bytes_be().1;
+        rbin.resize(32, 0);
+
+        if rbin[1] < 0x80 {
+            // remove leading zeros
+            rbin = rbin.into_iter().skip_while(|x| *x == 0u8).collect();
+        }
+
+        let mut sbin = self.s.to_bytes_be().1;
+        sbin.resize(32, 0);
+
+        if sbin[1] < 0x80 {
+            // remove leading zeros
+            sbin = sbin.into_iter().skip_while(|x| *x == 0u8).collect();
+        }
+
+        let content: Vec<u8> = [vec![2, rbin.len() as u8], rbin, 
+                                vec![2, sbin.len() as u8], sbin].concat();
+
+        let result: Vec<u8> = [vec![0x30, content.len() as u8], content].concat();
+
+        PyBytes::new(py, &result).into()
+    }
+
+    #[staticmethod]
+    fn decode(der: &[u8]) -> Self {
+        let mut idx = 0;
+        assert_eq!(0x30, der[idx]);
+        idx += 1;
+        let length = der[idx];
+        idx += 1;
+        assert_eq!(length, der.len() as u8 - 2);
+        assert_eq!(0x02, der[idx]);
+        idx += 1;
+
+        // read r
+        let rlen = der[idx] as usize;
+        idx += 1;
+        let r = BigInt::from_bytes_be(Sign::Plus, &der[idx .. idx + rlen]);
+        idx += rlen;
+
+        assert_eq!(0x02, der[idx]);
+        idx += 1;
+
+        // read s
+        let slen = der[idx] as usize;
+        idx += 1;
+        let s = BigInt::from_bytes_be(Sign::Plus, &der[idx .. idx + slen]);
+
+        Signature { r, s }
+    }
+
+}
+
+fn op_dup(stack: &mut Vec<Vec<u8>>) -> bool {
+    if stack.is_empty() {
+        return false
+    }
+
+    let last: Vec<u8> = stack.last().unwrap().to_vec();
+    stack.push(last);
+    true
+}
+
+fn op_equalverify(stack: &mut Vec<Vec<u8>>) -> bool {
+    if stack.len() < 2 {
+        return false
+    }
+
+    stack.pop() == stack.pop()
+}
+
+fn op_checksig(stack: &mut Vec<Vec<u8>>, z: &BigInt) -> bool {
+    if stack.len() < 2 {
+        return false
+    }
+
+    let sec = stack.pop().unwrap();
+    let der = stack.pop().unwrap();
+    let der = der.split_last().unwrap().1;
+
+    let point = Point::decode(&sec);
+    let sig = Signature::decode(&der);
+
+    // verify the signature by using the public key (point), signature hash (z) and signature (r,s)
+    let w = modinv(&sig.s, &*N);
+    let u = z * &w % &*N;
+    let v = &sig.r * &w % &*N;
+
+    let total = ecc_add(&ecc_mul(G.clone(), u), &ecc_mul(point, v));
+
+    let result = total.x == sig.r;
+    stack.push(vec![result as u8]);
+    result
 }
 
 #[pymethods]
