@@ -116,3 +116,30 @@ def test_encode_output_script():
     s2 = bitcoin.Script([118, 169, bitcoin.hash160(public_key.encode()), 136, 172])
 
     assert s1.encode() == s2.encode()
+
+def test_decode_sig():
+    sig_bin = bytes.fromhex('3045022000eff69ef2b1bd93a66ed5219add4fb51e11a840f404876325a1e8ffe0529a2c022100c7207fee197d27c618aea621406f6bf5ef6fca38681d82b2f06fddbdce6feab601')[:-1]
+
+    sig1 = common.Signature.decode(sig_bin)
+    sig2 = bitcoin.Signature.decode(sig_bin)
+
+    assert sig1.r == sig2.r
+    assert sig1.s == sig2.s
+
+    assert sig_bin == common.Signature.decode(sig_bin).encode()
+
+def test_evaluate_script():
+    # Programming Bitcoin - page 115
+    z = 0x7c076ff316692a3d7eb3c3bb0f8b1488cf72e1afcd929e29307032997a838a3d
+    sec = bytes.fromhex('02887387e452b8eacc4acfde10d9aaf7f6d9a0f975aabb10d006e4da568744d06c')
+    sig = bytes.fromhex('3045022000eff69ef2b1bd93a66ed5219add4fb51e11a840f404876325a1e8ffe0529a2c022100c7207fee197d27c618aea621406f6bf5ef6fca38681d82b2f06fddbdce6feab601')
+    
+    script_pubkey = bitcoin.Script([sec, 0xac]) # 0xac = 172 = OP_CHECKSIG
+    script_sig = bitcoin.Script([sig])
+    combined_script = script_sig + script_pubkey
+
+    # check for successful sig verification
+    equal_script = bitcoin.Script([b'\x01', 136])
+    combined_script = combined_script + equal_script
+
+    assert combined_script.evaluate(z)
