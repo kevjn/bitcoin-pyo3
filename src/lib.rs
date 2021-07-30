@@ -154,6 +154,24 @@ impl Script {
 
         PyBytes::new(py, &prefix).into()
     }
+
+    fn evaluate(&self, z: BigInt) -> bool {
+        let mut stack: Vec<Vec<u8>> = Vec::new();
+
+        self.commands.iter().all(|cmd| {
+            match cmd {
+                Command::Operation(x) => {
+                    match x {
+                        69 => op_dup(&mut stack),
+                        136 => op_equalverify(&mut stack),
+                        172 => op_checksig(&mut stack, &z),
+                        _ => panic!("unrecognized op: {}", x)
+                    }
+                }
+                Command::Element(x) => { stack.push(x.to_vec()); true }
+            }
+        })
+    }
 }
 
 #[pyproto]
