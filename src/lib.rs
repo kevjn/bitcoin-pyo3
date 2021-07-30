@@ -181,6 +181,14 @@ impl PyObjectProtocol for Script {
     }
 }
 
+#[pyproto]
+impl PyNumberProtocol for Script {
+    fn __add__(this: Script, other: Script) -> Self {
+        let commands: Vec<Command> = [this.commands, other.commands].concat();
+        Script { commands }
+    }
+}
+
 fn modinv(n: &BigInt, p: &BigInt) -> BigInt {
     // TODO: use binary exponentiation for modinv
     if p.is_one() { return BigInt::one() }
