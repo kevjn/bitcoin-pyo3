@@ -143,3 +143,88 @@ def test_evaluate_script():
     combined_script = combined_script + equal_script
 
     assert combined_script.evaluate(z)
+
+def test_encode_input_transaction():
+    G = bitcoin.Point(
+        x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+        y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+    )
+
+    secret_key = int.from_bytes(b'Test', 'big')
+    public_key = G * secret_key
+
+    source_script = bitcoin.Script([
+        118,
+        169,
+        bitcoin.hash160(public_key.encode()),
+        136,
+        172
+    ])
+ 
+    tx_in = bitcoin.TxIn(
+        prev_tx = bytes.fromhex('46325085c89fb98a4b7ceee44eac9b955f09e1ddc86d8dad3dfdcba46b4d36b2')[::-1],
+        prev_idx = 1,
+        script_sig = source_script
+    )
+
+    assert tx_in.encode().hex() == 'b2364d6ba4cbfd3dad8d6dc8dde1095f959bac4ee4ee7c4b8ab99fc885503246010000001976a91483ff579e048aee325a2cfa8b00c27581f8c7302988acffffffff'
+
+def test_encode_transaction():
+    common = bitcoin
+
+    G = common.Point(
+        x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+        y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+    )
+
+    secret_key = int.from_bytes(b'test secret', 'big')
+    public_key = G * secret_key
+
+    secret_key2 = int.from_bytes(b"test secret2", 'big')
+    public_key2 = G * secret_key2
+    
+    source_script = common.Script([
+        118,
+        169, # operation
+        common.hash160(public_key.encode()), # element
+        136,
+        172
+    ])
+
+    tx_in = common.TxIn(
+        prev_tx = bytes.fromhex('46325085c89fb98a4b7ceee44eac9b955f09e1ddc86d8dad3dfdcba46b4d36b2')[::-1],
+        prev_idx = 1,
+        script_sig = source_script, # this field will later have the digital signature
+    )
+
+    tx_out1 = common.TxOut(
+        amount = 50000, # we will send this 50,000 sat to our target wallet
+        script_pubkey = common.Script([
+            118,
+            169,
+            common.hash160(public_key2.encode()),
+            136,
+            172
+        ])
+    )
+
+    tx_out2 = common.TxOut(
+        amount = 47500, # back to us
+        script_pubkey = common.Script([
+            118,
+            169,
+            common.hash160(public_key.encode()),
+            136,
+            172
+        ])
+    )
+
+    tx = common.Tx(
+        version = 1,
+        tx_ins = [tx_in],
+        tx_outs = [tx_out1, tx_out2],
+    )
+
+    message = tx.encode()
+
+    assert message.hex() == '0100000001b2364d6ba4cbfd3dad8d6dc8dde1095f959bac4ee4ee7c4b8ab99fc885503246010000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88acffffffff0250c30000000000001976a914d3724822e571c563e37ccee951fd2d4e4cd48c3888ac8cb90000000000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88ac00000000'
