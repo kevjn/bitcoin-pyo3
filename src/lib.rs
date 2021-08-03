@@ -41,6 +41,10 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Script>()?;
     m.add_class::<Signature>()?;
 
+    m.add_class::<TxIn>()?;
+    m.add_class::<TxOut>()?;
+    m.add_class::<Tx>()?;
+
     m.add_function(wrap_pyfunction!(hash160, m)?)?;
 
     Ok(())
@@ -248,7 +252,7 @@ impl Script {
         Script { commands }
     }
 
-    fn encode(&self, py: Python) -> PyObject {
+    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
         let mut bytes: Vec<u8> = Vec::new();
         // Operations get encoded as a single byte
         // Elements get encoded as encoding length + element
@@ -267,7 +271,7 @@ impl Script {
         prefix.push(bytes.len() as u8);
         prefix.extend(bytes);
 
-        PyBytes::new(py, &prefix).into()
+        Ok(PyBytes::new(py, &prefix))
     }
 
     fn evaluate(&self, z: BigInt) -> bool {
@@ -303,6 +307,97 @@ impl PyNumberProtocol for Script {
         Script { commands }
     }
 }
+
+#[pyclass]
+#[derive(FromPyObject)]
+struct TxIn {
+    #[pyo3(get)]
+    prev_tx: Vec<u8>, // hash256 of UTXO as big endian (32-byte)
+    #[pyo3(get)]
+    prev_idx: u32, // the index number of the UTXO to be spent (4-byte)
+    #[pyo3(get)]
+    script_sig: Script // UTXO unlocking script (var size)
+}
+
+#[pymethods]
+impl TxIn {
+    #[new]
+    fn new(prev_tx: Vec<u8>, prev_idx: u32, script_sig: Script) -> Self {
+        TxIn { prev_tx, prev_idx, script_sig }
+    }
+
+    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let result = [
+            &self.prev_tx[..],
+            &self.prev_idx.to_le_bytes(),
+            self.script_sig.encode(py).unwrap().as_bytes(),
+            &0xffffffffu32.to_le_bytes() // sequence (4-byte)
+        ].concat();
+
+        Ok(PyBytes::new(py, &result))
+    }
+}
+
+#[pyclass]
+#[derive(FromPyObject)]
+struct TxOut {
+    #[pyo3(get)]
+    amount: u64, // in 1e-8 units (8 bytes)
+    #[pyo3(get)]
+    script_pubkey: Script
+}
+
+#[pymethods]
+impl TxOut {
+    #[new]
+    fn new(amount: u64, script_pubkey: Script) -> Self {
+        TxOut { amount, script_pubkey}
+    }
+
+    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let result = [
+            &self.amount.to_le_bytes()[..],
+            self.script_pubkey.encode(py).unwrap().as_bytes()
+        ].concat();
+
+        Ok(PyBytes::new(py, &result))
+    }
+}
+
+#[pyclass]
+struct Tx {
+    version: u32, // version (4 bytes)
+    tx_ins: Vec<TxIn>,
+    tx_outs: Vec<TxOut>
+}
+
+#[pymethods]
+impl Tx {
+    #[new]
+    fn new(version: u32, tx_ins: Vec<TxIn>, tx_outs: Vec<TxOut>) -> Self {
+        Tx { version, tx_ins, tx_outs}
+    }
+
+    fn encode(&self, py: Python) -> PyObject {
+
+        let result = [
+            &self.version.to_le_bytes()[..],
+
+            &self.tx_ins.len().to_le_bytes()[..1], // assume there are less than 256 input txs!
+            &self.tx_ins.iter().flat_map(|tx_in| tx_in.encode(py).unwrap().as_bytes())
+                .copied().collect::<Vec<u8>>(),
+
+            &self.tx_outs.len().to_le_bytes()[..1], // assume there are less than 256 output txs!
+            &self.tx_outs.iter().flat_map(|tx_out| tx_out.encode(py).unwrap().as_bytes())
+                .copied().collect::<Vec<u8>>(),
+
+            &0u32.to_le_bytes(), // locktime (not used)
+        ].concat();
+
+        PyBytes::new(py, &result).into()
+    }
+}
+
 
 fn modinv(n: &BigInt, p: &BigInt) -> BigInt {
     // TODO: use binary exponentiation for modinv
