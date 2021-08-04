@@ -11,6 +11,7 @@ use num::bigint::Sign;
 use num::Integer;
 use num::One;
 use num::Zero;
+use num::Num;
 
 // Hashing
 use sha2::{Sha256, Digest};
@@ -201,6 +202,24 @@ impl Signature {
         Signature { r, s }
     }
 
+    #[staticmethod]
+    fn sign(secret_key: BigInt, mut message: Vec<u8>) -> Self {
+        message.extend(1u32.to_le_bytes()); // 1 = SIGHASH_ALL
+
+        let z = BigInt::from_bytes_be(Sign::Plus, &hash256(&message));
+
+        // TODO: generate a 'random' secret key here
+        let secret = BigInt::from_str_radix("22642164261113154316413445432723627165870392276002866272158059571956911456350", 10).unwrap();
+
+        let r = ecc_mul(G.clone(), secret.clone()).x;
+        let mut s = modinv(&secret, &N) * (&z + &secret_key * &r) % &*N;
+        if s > &*N/2 {
+            s = &*N - s;
+        }
+
+        Signature { r, s }
+    }
+
 }
 
 fn op_dup(stack: &mut Vec<Vec<u8>>) -> bool {
@@ -315,7 +334,7 @@ struct TxIn {
     prev_tx: Vec<u8>, // hash256 of UTXO as big endian (32-byte)
     #[pyo3(get)]
     prev_idx: u32, // the index number of the UTXO to be spent (4-byte)
-    #[pyo3(get)]
+    #[pyo3(get, set)]
     script_sig: Script // UTXO unlocking script (var size)
 }
 
@@ -343,7 +362,7 @@ impl TxIn {
 struct TxOut {
     #[pyo3(get)]
     amount: u64, // in 1e-8 units (8 bytes)
-    #[pyo3(get)]
+    #[pyo3(get, set)]
     script_pubkey: Script
 }
 
@@ -367,6 +386,7 @@ impl TxOut {
 #[pyclass]
 struct Tx {
     version: u32, // version (4 bytes)
+    #[pyo3(set)]
     tx_ins: Vec<TxIn>,
     tx_outs: Vec<TxOut>
 }
