@@ -228,3 +228,79 @@ def test_encode_transaction():
     message = tx.encode()
 
     assert message.hex() == '0100000001b2364d6ba4cbfd3dad8d6dc8dde1095f959bac4ee4ee7c4b8ab99fc885503246010000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88acffffffff0250c30000000000001976a914d3724822e571c563e37ccee951fd2d4e4cd48c3888ac8cb90000000000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88ac00000000'
+
+def test_encode_signed_transaction():
+    common = bitcoin
+
+    G = common.Point(
+        x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+        y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+    )
+
+    secret_key = int.from_bytes(b'test secret', 'big') 
+    public_key = G * secret_key
+
+    secret_key2 = int.from_bytes(b"test secret2", 'big') 
+    public_key2 = G * secret_key2
+    
+    # use the script sig from the previous ScriptPubKey
+    source_script = common.Script([
+        118,
+        169,
+        common.hash160(public_key.encode()),
+        136,
+        172
+    ])
+
+    tx_in = common.TxIn(
+        prev_tx = bytes.fromhex('46325085c89fb98a4b7ceee44eac9b955f09e1ddc86d8dad3dfdcba46b4d36b2')[::-1],
+        prev_idx = 1,
+        script_sig = source_script # this field will later have the digital signature
+    )
+
+    tx_out1 = common.TxOut(
+        amount = 50000, # we will send this 50,000 sat to our target wallet
+        script_pubkey = common.Script([
+            118,
+            169,
+            common.hash160(public_key2.encode()),
+            136,
+            172
+        ])
+    )
+
+    tx_out2 = common.TxOut(
+        amount = 47500, # back to us
+        script_pubkey = common.Script([
+            118,
+            169,
+            common.hash160(public_key.encode()),
+            136,
+            172
+        ])
+    )
+
+    tx = common.Tx(
+        version = 1,
+        tx_ins = [tx_in],
+        tx_outs = [tx_out1, tx_out2],
+    )
+
+    message = tx.encode()
+
+    sig = common.Signature.sign(secret_key, message)
+    sig_bytes = sig.encode()
+
+    assert sig_bytes.hex() == '30440220687a2a84aeaf387d8c6e9752fb8448f369c0f5da9fe695ff2eceb7fd6db8b728022069cece6f22680eeddb691e08192cf292eaa48eb3e449f48ac55b180b1efff93d'
+
+    # Append 1 (= SIGHASH_ALL flag), indicating this DER signature we created encoded "ALL" of the tx (by far most common)
+    sig_bytes_and_type = sig_bytes + b'\x01'
+
+    script_sig = common.Script([sig_bytes_and_type, public_key.encode()])
+
+    assert tx.encode().hex() == '0100000001b2364d6ba4cbfd3dad8d6dc8dde1095f959bac4ee4ee7c4b8ab99fc885503246010000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88acffffffff0250c30000000000001976a914d3724822e571c563e37ccee951fd2d4e4cd48c3888ac8cb90000000000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88ac00000000'
+
+    tx_in.script_sig = script_sig
+    tx.tx_ins = [tx_in]
+
+    assert tx.encode().hex() == '0100000001b2364d6ba4cbfd3dad8d6dc8dde1095f959bac4ee4ee7c4b8ab99fc885503246010000006a4730440220687a2a84aeaf387d8c6e9752fb8448f369c0f5da9fe695ff2eceb7fd6db8b728022069cece6f22680eeddb691e08192cf292eaa48eb3e449f48ac55b180b1efff93d01210261c106858180622a02e05ee4fcd78db8a68293ee8dd7cfe40bcb9d43855f469cffffffff0250c30000000000001976a914d3724822e571c563e37ccee951fd2d4e4cd48c3888ac8cb90000000000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88ac00000000'
