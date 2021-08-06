@@ -398,7 +398,7 @@ impl Tx {
         Tx { version, tx_ins, tx_outs}
     }
 
-    fn encode(&self, py: Python) -> PyObject {
+    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
 
         let result = [
             &self.version.to_le_bytes()[..],
@@ -414,7 +414,13 @@ impl Tx {
             &0u32.to_le_bytes(), // locktime (not used)
         ].concat();
 
-        PyBytes::new(py, &result).into()
+        Ok(PyBytes::new(py, &result))
+    }
+
+    fn id<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
+        let mut result = hash256(self.encode(py).unwrap().as_bytes());
+        result.reverse();
+        Ok(PyBytes::new(py, &result))
     }
 }
 
