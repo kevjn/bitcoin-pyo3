@@ -304,3 +304,21 @@ def test_encode_signed_transaction():
     tx.tx_ins = [tx_in]
 
     assert tx.encode().hex() == '0100000001b2364d6ba4cbfd3dad8d6dc8dde1095f959bac4ee4ee7c4b8ab99fc885503246010000006a4730440220687a2a84aeaf387d8c6e9752fb8448f369c0f5da9fe695ff2eceb7fd6db8b728022069cece6f22680eeddb691e08192cf292eaa48eb3e449f48ac55b180b1efff93d01210261c106858180622a02e05ee4fcd78db8a68293ee8dd7cfe40bcb9d43855f469cffffffff0250c30000000000001976a914d3724822e571c563e37ccee951fd2d4e4cd48c3888ac8cb90000000000001976a9140e829f27b30f9cbc3005b574b060733587022d1d88ac00000000'
+
+def test_decode_transaction():
+    # Programming bitcoin chapter 5
+    raw = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
+    tx = bitcoin.Tx.decode(raw);
+
+    # metadata parsing
+    assert tx.version == 1
+
+    # input parsing
+    assert len(tx.tx_ins) == 1
+    assert tx.tx_ins[0].prev_tx[::-1].hex() == 'd1c789a9c60383bf715f3f6ad9d14b91fe55f3deb369fe5d9280cb1a01793f81'
+    assert tx.tx_ins[0].prev_idx == 0
+
+    # output parsing
+    assert len(tx.tx_outs) == 2
+    assert tx.tx_outs[0].amount == 32454049
+    assert tx.tx_outs[1].amount == 10011545
