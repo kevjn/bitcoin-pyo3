@@ -13,6 +13,10 @@ use num::One;
 use num::Zero;
 use num::Num;
 
+// Used for parsing byte streams
+use std::io::BufReader;
+use std::io::Read;
+
 // Hashing
 use sha2::{Sha256, Digest};
 use ripemd160::{Ripemd160};
@@ -47,6 +51,7 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Tx>()?;
 
     m.add_function(wrap_pyfunction!(hash160, m)?)?;
+    m.add_function(wrap_pyfunction!(hash256, m)?)?;
 
     Ok(())
 }
@@ -240,6 +245,15 @@ fn op_equalverify(stack: &mut Vec<Vec<u8>>) -> bool {
     stack.pop() == stack.pop()
 }
 
+fn op_hash160(stack: &mut Vec<Vec<u8>>) -> bool {
+    if stack.len() < 1 {
+        return false
+    }
+    let element = stack.pop().unwrap();
+    stack.push(hash160(&element).to_vec());
+    true
+}
+
 fn op_checksig(stack: &mut Vec<Vec<u8>>, z: &BigInt) -> bool {
     if stack.len() < 2 {
         return false
@@ -300,8 +314,9 @@ impl Script {
             match cmd {
                 Command::Operation(x) => {
                     match x {
-                        69 => op_dup(&mut stack),
+                        118 => op_dup(&mut stack),
                         136 => op_equalverify(&mut stack),
+                        169 => op_hash160(&mut stack),
                         172 => op_checksig(&mut stack, &z),
                         _ => panic!("unrecognized op: {}", x)
                     }
@@ -309,6 +324,29 @@ impl Script {
                 Command::Element(x) => { stack.push(x.to_vec()); true }
             }
         })
+    }
+}
+
+impl Script {
+    fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error>  {
+        let length = ReadExt::read_varint(stream)?;
+        let commands = (0..length).map(|_| {
+            let current = ReadExt::read_u8(stream).unwrap();
+            match current {
+                1..=75 => {
+                    // Element
+                    let mut v = Vec::with_capacity(length.into());
+                    stream.read(&mut v).unwrap();
+                    Command::Element(v)
+                },
+                _ => {
+                    // command
+                    Command::Operation(current)
+                }
+            }
+        }).collect();
+
+        Ok(Script { commands })
     }
 }
 
@@ -321,21 +359,20 @@ impl PyObjectProtocol for Script {
 
 #[pyproto]
 impl PyNumberProtocol for Script {
-    fn __add__(this: Script, other: Script) -> Self {
-        let commands: Vec<Command> = [this.commands, other.commands].concat();
+    fn __add__(lhs: Script, rhs: Script) -> Script {
+        let commands: Vec<Command> = [lhs.commands, rhs.commands].concat();
         Script { commands }
     }
 }
 
 #[pyclass]
-#[derive(FromPyObject)]
+#[derive(Clone)]
 struct TxIn {
-    #[pyo3(get)]
     prev_tx: Vec<u8>, // hash256 of UTXO as big endian (32-byte)
     #[pyo3(get)]
     prev_idx: u32, // the index number of the UTXO to be spent (4-byte)
     #[pyo3(get, set)]
-    script_sig: Script // UTXO unlocking script (var size)
+    script_sig: Script, // UTXO unlocking script (var size)
 }
 
 #[pymethods]
@@ -355,10 +392,28 @@ impl TxIn {
 
         Ok(PyBytes::new(py, &result))
     }
+
+    #[getter]
+    fn prev_tx<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
+        Ok(PyBytes::new(py, &self.prev_tx))
+    }
+}
+
+impl TxIn {
+    fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error> {
+        let mut prev_tx = [0; 32];
+        stream.read_exact(&mut prev_tx)?;
+        let prev_tx = prev_tx.to_vec();
+
+        let prev_idx = ReadExt::read_u32(stream)?;
+        let script_sig = Script::decode(stream)?;
+        let _sequence = ReadExt::read_u32(stream);
+        Ok(TxIn { prev_tx, prev_idx, script_sig })
+    }
 }
 
 #[pyclass]
-#[derive(FromPyObject)]
+#[derive(Clone)]
 struct TxOut {
     #[pyo3(get)]
     amount: u64, // in 1e-8 units (8 bytes)
@@ -383,13 +438,74 @@ impl TxOut {
     }
 }
 
+impl TxOut {
+    fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error> {
+        let amount = ReadExt::read_u64(stream)?;
+        let script_pubkey = Script::decode(stream)?;
+
+        Ok(TxOut { amount, script_pubkey })
+    }
+}
+
 #[pyclass]
 struct Tx {
+    #[pyo3(get)]
     version: u32, // version (4 bytes)
-    #[pyo3(set)]
+    #[pyo3(get, set)]
     tx_ins: Vec<TxIn>,
+    #[pyo3(get)]
     tx_outs: Vec<TxOut>
 }
+
+pub trait ReadExt {
+    // fn read(&mut self) -> Result<T, std::io::Error>;
+    fn read_varint(&mut self) -> Result<u8, std::io::Error>;
+    fn read_u8(&mut self) -> Result<u8, std::io::Error>;
+    fn read_u32(&mut self) -> Result<u32, std::io::Error>;
+    fn read_u64(&mut self) -> Result<u64, std::io::Error>;
+}
+
+impl<R: Read> ReadExt for R {
+
+    // fn read(&mut self) -> Result<T, std::io::Error> {
+    //     let mut buf = [0; T.bits >> 3];
+    //     self.read_exact(&mut buf[..])?;
+    //     Ok(T::from_le_bytes(buf));
+    // }
+
+    // Read a varint (8-byte for now)
+    #[inline]
+    fn read_varint(&mut self) -> Result<u8, std::io::Error> {
+        let mut buf = [0u8; 1];
+        self.read_exact(&mut buf[..])?;
+        Ok(u8::from_le_bytes(buf))
+    }
+
+    // Read a 8-bit uint
+    #[inline]
+    fn read_u8(&mut self) -> Result<u8, std::io::Error> {
+        let mut buf = [0u8; 1];
+        self.read_exact(&mut buf[..])?;
+        Ok(u8::from_le_bytes(buf))
+    }
+
+    /// Read a 32-bit uint
+    #[inline]
+    fn read_u32(&mut self) -> Result<u32, std::io::Error> {
+        let mut buf = [0; 4];
+        self.read_exact(&mut buf[..])?;
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    /// Read a 64-bit uint
+    #[inline]
+    fn read_u64(&mut self) -> Result<u64, std::io::Error> {
+        let mut buf = [0; 8];
+        self.read_exact(&mut buf[..])?;
+        Ok(u64::from_le_bytes(buf))
+    }
+}
+
 
 #[pymethods]
 impl Tx {
@@ -417,10 +533,39 @@ impl Tx {
         Ok(PyBytes::new(py, &result))
     }
 
+    #[staticmethod]
+    fn decode(bytes: &[u8]) -> PyResult<Tx> {
+        let mut stream = BufReader::new(bytes);
+
+        let version = ReadExt::read_u32(&mut stream)?;
+
+        let tx_ins = (0..ReadExt::read_u8(&mut stream)?).map(|_| TxIn::decode(&mut stream).unwrap()).collect();
+        let tx_outs = (0..ReadExt::read_u8(&mut stream)?).map(|_| TxOut::decode(&mut stream).unwrap()).collect();
+
+        // decode locktime?
+        Ok(Tx { version, tx_ins, tx_outs })
+    }
+
     fn id<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
         let mut result = hash256(self.encode(py).unwrap().as_bytes());
         result.reverse();
         Ok(PyBytes::new(py, &result))
+    }
+
+    fn validate(&self, prev_script_pubkey: Script, py: Python) -> bool {
+        // Bitcoin’s inputs are spending outputs of a previous transaction (UTXO).
+        // The UTXO is valid for spending if the scriptsig successfully unlocks 
+        // the previous scriptpubkey
+
+        // get the integer representation of the signature hash (z)
+        let z = BigInt::from_bytes_be(Sign::Plus, self.encode(py).unwrap().as_bytes());
+
+        // validate the digital signature of all inputs
+        self.tx_ins.iter().all(|tx_in| {
+            let commands = [tx_in.script_sig.commands.clone(), prev_script_pubkey.commands.clone()].concat();
+            let combined = Script { commands };
+            combined.evaluate(z.clone())
+        })
     }
 }
 
@@ -528,6 +673,7 @@ fn hash160(bytes: &[u8]) -> [u8; 20] {
     hasher.finalize().into()
 }
 
+#[pyfunction]
 fn hash256(bytes: &[u8]) -> [u8; 32] {
     // sha256 2x
     let mut hasher = Sha256::new();
