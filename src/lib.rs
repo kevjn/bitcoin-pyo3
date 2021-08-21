@@ -285,6 +285,11 @@ impl Script {
         Script { commands }
     }
 
+    // #[staticmethod]
+    // fn p2pkh_script(h160: Command) {
+    //     // OP_DUP, OP_HASH160, h160, OP_EQUALVERIFY, OP_CHECKSIG
+    // }
+
     fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
         let mut bytes: Vec<u8> = Vec::new();
         // Operations get encoded as a single byte
@@ -331,7 +336,7 @@ impl Script {
     fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error>  {
         let length = ReadExt::read_varint(stream)?;
         let commands = (0..length).map(|_| {
-            let current = ReadExt::read_u8(stream).unwrap();
+            let current = ReadExt::read_typed::<u8>(stream).unwrap();
             match current {
                 1..=75 => {
                     // Element
@@ -405,9 +410,11 @@ impl TxIn {
         stream.read_exact(&mut prev_tx)?;
         let prev_tx = prev_tx.to_vec();
 
-        let prev_idx = ReadExt::read_u32(stream)?;
+        let prev_idx = ReadExt::read_typed::<u32>(stream)?;
         let script_sig = Script::decode(stream)?;
-        let _sequence = ReadExt::read_u32(stream);
+
+        ReadExt::read_typed::<u32>(stream)?; // sequence (not used)
+
         Ok(TxIn { prev_tx, prev_idx, script_sig })
     }
 }
@@ -440,7 +447,7 @@ impl TxOut {
 
 impl TxOut {
     fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error> {
-        let amount = ReadExt::read_u64(stream)?;
+        let amount = stream.read_typed()?;
         let script_pubkey = Script::decode(stream)?;
 
         Ok(TxOut { amount, script_pubkey })
@@ -458,20 +465,18 @@ struct Tx {
 }
 
 pub trait ReadExt {
-    // fn read(&mut self) -> Result<T, std::io::Error>;
+    fn read_typed<T>(&mut self) -> Result<T, std::io::Error>;
     fn read_varint(&mut self) -> Result<u8, std::io::Error>;
-    fn read_u8(&mut self) -> Result<u8, std::io::Error>;
-    fn read_u32(&mut self) -> Result<u32, std::io::Error>;
-    fn read_u64(&mut self) -> Result<u64, std::io::Error>;
 }
 
 impl<R: Read> ReadExt for R {
 
-    // fn read(&mut self) -> Result<T, std::io::Error> {
-    //     let mut buf = [0; T.bits >> 3];
-    //     self.read_exact(&mut buf[..])?;
-    //     Ok(T::from_le_bytes(buf));
-    // }
+    #[inline]
+    fn read_typed<T>(&mut self) -> Result<T, std::io::Error> {
+        let mut v = vec![0u8; std::mem::size_of::<T>()];
+        self.read_exact(&mut v).unwrap();
+        Ok(unsafe { std::mem::transmute_copy(&v[0]) })
+    }
 
     // Read a varint (8-byte for now)
     #[inline]
@@ -479,30 +484,6 @@ impl<R: Read> ReadExt for R {
         let mut buf = [0u8; 1];
         self.read_exact(&mut buf[..])?;
         Ok(u8::from_le_bytes(buf))
-    }
-
-    // Read a 8-bit uint
-    #[inline]
-    fn read_u8(&mut self) -> Result<u8, std::io::Error> {
-        let mut buf = [0u8; 1];
-        self.read_exact(&mut buf[..])?;
-        Ok(u8::from_le_bytes(buf))
-    }
-
-    /// Read a 32-bit uint
-    #[inline]
-    fn read_u32(&mut self) -> Result<u32, std::io::Error> {
-        let mut buf = [0; 4];
-        self.read_exact(&mut buf[..])?;
-        Ok(u32::from_le_bytes(buf))
-    }
-
-    /// Read a 64-bit uint
-    #[inline]
-    fn read_u64(&mut self) -> Result<u64, std::io::Error> {
-        let mut buf = [0; 8];
-        self.read_exact(&mut buf[..])?;
-        Ok(u64::from_le_bytes(buf))
     }
 }
 
@@ -537,10 +518,10 @@ impl Tx {
     fn decode(bytes: &[u8]) -> PyResult<Tx> {
         let mut stream = BufReader::new(bytes);
 
-        let version = ReadExt::read_u32(&mut stream)?;
+        let version = stream.read_typed()?;
 
-        let tx_ins = (0..ReadExt::read_u8(&mut stream)?).map(|_| TxIn::decode(&mut stream).unwrap()).collect();
-        let tx_outs = (0..ReadExt::read_u8(&mut stream)?).map(|_| TxOut::decode(&mut stream).unwrap()).collect();
+        let tx_ins = (0..ReadExt::read_typed::<u8>(&mut stream)?).map(|_| TxIn::decode(&mut stream).unwrap()).collect();
+        let tx_outs = (0..ReadExt::read_typed::<u8>(&mut stream)?).map(|_| TxOut::decode(&mut stream).unwrap()).collect();
 
         // decode locktime?
         Ok(Tx { version, tx_ins, tx_outs })
