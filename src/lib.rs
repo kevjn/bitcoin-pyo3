@@ -378,13 +378,16 @@ struct TxIn {
     prev_idx: u32, // the index number of the UTXO to be spent (4-byte)
     #[pyo3(get, set)]
     script_sig: Script, // UTXO unlocking script (var size)
+    #[pyo3(get)]
+    sequence: u32 // not used
 }
 
 #[pymethods]
 impl TxIn {
     #[new]
-    fn new(prev_tx: Vec<u8>, prev_idx: u32, script_sig: Script) -> Self {
-        TxIn { prev_tx, prev_idx, script_sig }
+    #[args(sequence=0xffffffffu32)]
+    fn new(prev_tx: Vec<u8>, prev_idx: u32, script_sig: Script, sequence: u32) -> Self {
+        TxIn { prev_tx, prev_idx, script_sig, sequence }
     }
 
     fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
@@ -392,7 +395,7 @@ impl TxIn {
             &self.prev_tx[..],
             &self.prev_idx.to_le_bytes(),
             self.script_sig.encode(py).unwrap().as_bytes(),
-            &0xffffffffu32.to_le_bytes() // sequence (4-byte)
+            &self.sequence.to_le_bytes() // sequence (4-byte)
         ].concat();
 
         Ok(PyBytes::new(py, &result))
@@ -413,9 +416,9 @@ impl TxIn {
         let prev_idx = ReadExt::read_typed::<u32>(stream)?;
         let script_sig = Script::decode(stream)?;
 
-        ReadExt::read_typed::<u32>(stream)?; // sequence (not used)
+        let sequence = ReadExt::read_typed::<u32>(stream)?;
 
-        Ok(TxIn { prev_tx, prev_idx, script_sig })
+        Ok(TxIn { prev_tx, prev_idx, script_sig, sequence })
     }
 }
 
@@ -461,7 +464,9 @@ struct Tx {
     #[pyo3(get, set)]
     tx_ins: Vec<TxIn>,
     #[pyo3(get)]
-    tx_outs: Vec<TxOut>
+    tx_outs: Vec<TxOut>,
+    #[pyo3(get)]
+    locktime: u32
 }
 
 pub trait ReadExt {
@@ -491,8 +496,9 @@ impl<R: Read> ReadExt for R {
 #[pymethods]
 impl Tx {
     #[new]
-    fn new(version: u32, tx_ins: Vec<TxIn>, tx_outs: Vec<TxOut>) -> Self {
-        Tx { version, tx_ins, tx_outs}
+    #[args(locktime=0u32)]
+    fn new(version: u32, tx_ins: Vec<TxIn>, tx_outs: Vec<TxOut>, locktime: u32) -> Self {
+        Tx { version, tx_ins, tx_outs, locktime}
     }
 
     fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
@@ -508,7 +514,7 @@ impl Tx {
             &self.tx_outs.iter().flat_map(|tx_out| tx_out.encode(py).unwrap().as_bytes())
                 .copied().collect::<Vec<u8>>(),
 
-            &0u32.to_le_bytes(), // locktime (not used)
+            &self.locktime.to_le_bytes(), // locktime (not used)
         ].concat();
 
         Ok(PyBytes::new(py, &result))
@@ -523,8 +529,9 @@ impl Tx {
         let tx_ins = (0..ReadExt::read_typed::<u8>(&mut stream)?).map(|_| TxIn::decode(&mut stream).unwrap()).collect();
         let tx_outs = (0..ReadExt::read_typed::<u8>(&mut stream)?).map(|_| TxOut::decode(&mut stream).unwrap()).collect();
 
-        // decode locktime?
-        Ok(Tx { version, tx_ins, tx_outs })
+        let locktime = stream.read_typed()?;
+
+        Ok(Tx { version, tx_ins, tx_outs, locktime })
     }
 
     fn id<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
