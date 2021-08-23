@@ -335,21 +335,31 @@ impl Script {
 impl Script {
     fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error>  {
         let length = ReadExt::read_varint(stream)?;
-        let commands = (0..length).map(|_| {
-            let current = ReadExt::read_typed::<u8>(stream).unwrap();
+        let mut commands: Vec<Command> = Vec::new();
+
+        let mut count = 0;
+        while count < length {
+            let current = ReadExt::read_typed::<u8>(stream)?;
+            count += 1;
             match current {
                 1..=75 => {
                     // Element
-                    let mut v = Vec::with_capacity(length.into());
-                    stream.read(&mut v).unwrap();
-                    Command::Element(v)
+                    let mut v: Vec<u8> = vec![0u8; current.into()];
+                    stream.read_exact(&mut v)?;
+                    commands.push(Command::Element(v));
+                    count += current;
                 },
+                76..=77 => panic!("Not implemented {}", current),
                 _ => {
                     // command
-                    Command::Operation(current)
+                    commands.push(Command::Operation(current));
                 }
             }
-        }).collect();
+        }
+
+        if count != length {
+            panic!("Uneven lengths {} and {}", count, length)
+        }
 
         Ok(Script { commands })
     }
@@ -524,10 +534,10 @@ impl Tx {
     fn decode(bytes: &[u8]) -> PyResult<Tx> {
         let mut stream = BufReader::new(bytes);
 
-        let version = stream.read_typed()?;
+        let version: u32 = stream.read_typed()?;
 
-        let tx_ins = (0..ReadExt::read_typed::<u8>(&mut stream)?).map(|_| TxIn::decode(&mut stream).unwrap()).collect();
-        let tx_outs = (0..ReadExt::read_typed::<u8>(&mut stream)?).map(|_| TxOut::decode(&mut stream).unwrap()).collect();
+        let tx_ins = (0..stream.read_varint()?).map(|_| TxIn::decode(&mut stream).unwrap()).collect();
+        let tx_outs = (0..stream.read_varint()?).map(|_| TxOut::decode(&mut stream).unwrap()).collect();
 
         let locktime = stream.read_typed()?;
 
