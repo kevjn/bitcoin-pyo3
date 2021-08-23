@@ -312,13 +312,20 @@ def test_decode_transaction():
 
     # metadata parsing
     assert tx.version == 1
+    assert tx.locktime == 410393
 
     # input parsing
     assert len(tx.tx_ins) == 1
     assert tx.tx_ins[0].prev_tx[::-1].hex() == 'd1c789a9c60383bf715f3f6ad9d14b91fe55f3deb369fe5d9280cb1a01793f81'
     assert tx.tx_ins[0].prev_idx == 0
+    assert tx.tx_ins[0].sequence == 0xfffffffe
 
     # output parsing
     assert len(tx.tx_outs) == 2
     assert tx.tx_outs[0].amount == 32454049
     assert tx.tx_outs[1].amount == 10011545
+
+    assert tx.encode().hex() == raw.hex()
+
+    # check id
+    assert tx.id().hex() == '452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03'
