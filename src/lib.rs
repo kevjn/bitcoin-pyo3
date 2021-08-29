@@ -133,9 +133,21 @@ enum Command {
     Element(Vec<u8>)
 }
 
+impl IntoPy<PyObject> for Command {
+    fn into_py(self, py: Python) -> PyObject {
+        let bytes = match self {
+            Command::Operation(x) => x.to_le_bytes().to_vec(),
+            Command::Element(x) => x
+        };
+
+        PyBytes::new(py, &bytes).into()
+    }
+}
+
 #[pyclass]
 #[derive(Clone)]
 struct Script {
+    #[pyo3(get)]
     commands: Vec<Command>
 }
 
