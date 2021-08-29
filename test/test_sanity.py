@@ -329,3 +329,40 @@ def test_decode_transaction():
 
     # check id
     assert tx.id().hex() == '452c629d67e41baec3ac6f04fe744b4b9617f8f859c63b3002f8684e7a4fee03'
+
+    assert bitcoin.Tx.decode(tx.encode()).encode() == tx.encode()
+
+def test_decode_and_validate_transaction():
+    raw = bytes.fromhex('0100000001813f79011acb80925dfe69b3def355fe914bd1d96a3f5f71bf8303c6a989c7d1000000006b483045022100ed81ff192e75a3fd2304004dcadb746fa5e24c5031ccfcf21320b0277457c98f02207a986d955c6e0cb35d446a89d3f56100f4d7f67801c31967743a9c8e10615bed01210349fc4e631e3624a545de3f89f5d8684c7b8138bd94bdd531d2e213bf016b278afeffffff02a135ef01000000001976a914bc3b654dca7e56b04dca18f2566cdaf02e8d9ada88ac99c39800000000001976a9141c4bc762dd5423e332166702cb75f40df79fea1288ac19430600')
+    tx = bitcoin.Tx.decode(raw);
+
+    script_pubkey = bitcoin.Script([
+        118,
+        169,
+        bytes.fromhex('a802fc56c704ce87c42d7c92eb75e7896bdc41ae'),
+        136,
+        172
+    ])
+
+    assert tx.validate(script_pubkey.encode())
+
+    # test altering the digital signature or public key and make sure the validation breaks
+    sig, pkb = tx.tx_ins[0].script_sig.commands
+    altered_tx_in = tx.tx_ins[0]
+
+    # alter sig
+    new_sig = sig[:5] + bytes([sig[5] % 23]) + sig[6:]
+    altered_tx_in.script_sig = bitcoin.Script([new_sig, pkb])
+    tx.tx_ins = [altered_tx_in]
+    assert not tx.validate(script_pubkey.encode())
+
+    # revert back the signature
+    altered_tx_in.script_sig = bitcoin.Script([sig, pkb])
+    tx.tx_ins = [altered_tx_in]
+    assert tx.validate(script_pubkey.encode())
+
+    # alter public key
+    new_pkb = pkb[:5] + bytes([pkb[5] % 23]) + pkb[6:]
+    altered_tx_in.script_sig = bitcoin.Script([sig, new_pkb])
+    tx.tx_ins = [altered_tx_in]
+    assert not tx.validate(script_pubkey.encode())
