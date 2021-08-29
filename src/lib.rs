@@ -550,20 +550,34 @@ impl Tx {
         Ok(PyBytes::new(py, &result))
     }
 
-    fn validate(&self, prev_script_pubkey: Script, py: Python) -> bool {
+    fn validate(&mut self, prev_script_pubkey: &[u8], py: Python) -> bool {
         // Bitcoin’s inputs are spending outputs of a previous transaction (UTXO).
         // The UTXO is valid for spending if the scriptsig successfully unlocks 
         // the previous scriptpubkey
 
-        // get the integer representation of the signature hash (z)
-        let z = BigInt::from_bytes_be(Sign::Plus, self.encode(py).unwrap().as_bytes());
+        let prev_script_pubkey = Script::decode(&mut BufReader::new(prev_script_pubkey)).unwrap();
 
-        // validate the digital signature of all inputs
-        self.tx_ins.iter().all(|tx_in| {
-            let commands = [tx_in.script_sig.commands.clone(), prev_script_pubkey.commands.clone()].concat();
+        for i in 0..self.tx_ins.len() {
+            let script_sig = &self.tx_ins[i].script_sig.clone();
+
+            self.tx_ins[i].script_sig = prev_script_pubkey.clone();
+
+            // get the signature hash and append 1 (SIGHASH_ALL)
+            let mut sighash = self.encode(py).unwrap().as_bytes().to_vec();
+            sighash.extend(1u32.to_le_bytes());
+            
+            // integer representation of the signature hash
+            let z = BigInt::from_bytes_be(Sign::Plus, &hash256(&sighash));
+
+            self.tx_ins[i].script_sig = script_sig.clone(); // revert back
+
+            let commands = [script_sig.commands.clone(), prev_script_pubkey.commands.clone()].concat();
             let combined = Script { commands };
-            combined.evaluate(z.clone())
-        })
+            if !combined.evaluate(z) {
+                return false;
+            }
+        }
+        true
     }
 }
 
