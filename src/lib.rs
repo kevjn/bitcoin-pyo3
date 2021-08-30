@@ -192,31 +192,28 @@ impl Signature {
     }
 
     #[staticmethod]
-    fn decode(der: &[u8]) -> Self {
-        let mut idx = 0;
-        assert_eq!(0x30, der[idx]);
-        idx += 1;
-        let length = der[idx];
-        idx += 1;
+    fn decode(der: &[u8]) -> Result<Self, std::io::Error> {
+        let mut stream = BufReader::new(der);
+        assert_eq!(0x30u8, stream.read_typed()?);
+        let length: u8 = stream.read_typed()?;
         assert_eq!(length, der.len() as u8 - 2);
-        assert_eq!(0x02, der[idx]);
-        idx += 1;
+        assert_eq!(0x02u8, stream.read_typed()?);
 
         // read r
-        let rlen = der[idx] as usize;
-        idx += 1;
-        let r = BigInt::from_bytes_be(Sign::Plus, &der[idx .. idx + rlen]);
-        idx += rlen;
+        let rlen = stream.read_typed::<u8>()? as usize;
+        let mut v = vec![0u8; rlen];
+        stream.read_exact(&mut v).unwrap();
+        let r = BigInt::from_bytes_be(Sign::Plus, &v);
 
-        assert_eq!(0x02, der[idx]);
-        idx += 1;
+        assert_eq!(0x02u8, stream.read_typed()?);
 
         // read s
-        let slen = der[idx] as usize;
-        idx += 1;
-        let s = BigInt::from_bytes_be(Sign::Plus, &der[idx .. idx + slen]);
+        let slen = stream.read_typed::<u8>()? as usize;
+        let mut v = vec![0u8; slen];
+        stream.read_exact(&mut v).unwrap();
+        let s = BigInt::from_bytes_be(Sign::Plus, &v);
 
-        Signature { r, s }
+        Ok(Signature { r, s })
     }
 
     #[staticmethod]
@@ -276,7 +273,7 @@ fn op_checksig(stack: &mut Vec<Vec<u8>>, z: &BigInt) -> bool {
     let der = der.split_last().unwrap().1;
 
     let point = Point::decode(&sec);
-    let sig = Signature::decode(&der);
+    let sig = Signature::decode(&der).unwrap();
 
     // verify the signature by using the public key (point), signature hash (z) and signature (r,s)
     let w = modinv(&sig.s, &*N);
