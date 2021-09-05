@@ -17,6 +17,18 @@ use num::Num;
 use std::io::BufReader;
 use std::io::Read;
 
+// encoding/decoding structs
+use serde::{Serialize, Deserialize};
+use serde::ser::{Serializer, SerializeSeq, SerializeTuple};
+use serde::de::{Deserializer, Visitor, SeqAccess};
+use bincode::{DefaultOptions, Options};
+
+// convert Vec<T> to an array
+use std::convert::TryInto;
+
+// formatting
+use std::fmt;
+
 // Hashing
 use sha2::{Sha256, Digest};
 use ripemd160::{Ripemd160};
@@ -65,6 +77,56 @@ struct Point {
     y: BigInt
 }
 
+
+impl Serialize for Point {
+    // According to Standards of Efficient Cryptography a compressed coordinate is encoded as:
+    // 1. 0x02/0x03 byte header to indicate a compressed ECDSA point, 0x02 for even y, 0x03 for odd y
+    // 2. the x coordinate as a 32-byte big-endian integer
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer,
+    {
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element::<u8>(&[0x02, 0x03][self.y.is_odd() as usize])?;
+        let mut x = self.x.to_signed_bytes_le();
+        x.resize(32, 0);
+        x.reverse(); // switch to big endian
+        tup.serialize_element::<[u8; 32]>(&x.try_into().unwrap())?;
+        tup.end()
+    }
+}
+
+struct PointVisitor;
+impl<'de> Visitor<'de> for PointVisitor {
+    type Value = Point;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Point")
+    }
+
+    fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error> where V: SeqAccess<'de>,
+    {
+        assert_eq!(Some(2), seq.size_hint());
+        let prefix = seq.next_element::<u8>()?.unwrap();
+        let elements = seq.next_element::<[u8; 32]>()?.unwrap();
+        let x = BigInt::from_signed_bytes_be(&elements);
+
+        // solve y^2 = x^3 + 7 (mod P) for y
+        let mut y: BigInt = (x.modpow(&BigInt::from(3u32), &*P) + 7u32) % &*P;
+        y = y.modpow(&(&*P + 1u32).div_floor(&BigInt::from(4u32)), &*P);
+        if y.is_even() != (prefix == 2u8) {
+            y = &*P - y; // flip if needed
+        }
+
+        Ok(Point { x, y })
+    }
+}
+
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D>(deserializer: D) -> Result<Point, D::Error> where D: Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(2, PointVisitor)
+    }
+}
+
 #[pymethods]
 impl Point {
     #[new]
@@ -75,6 +137,23 @@ impl Point {
     fn encode(&self, py: Python) -> PyObject {
         // return the compressed SEC (Standards for Efficient Cryptography) bytes encoding of the point
         PyBytes::new(py, &encode(self)).into()
+    }
+
+    fn serialize<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let bytes = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .serialize(&self).unwrap();
+
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[staticmethod]
+    fn deserialize(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        let script = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(bytes).unwrap();
+
+        Ok(script)
     }
 
     #[staticmethod]
@@ -126,8 +205,8 @@ impl PyNumberProtocol for Point {
     }
 }
 
-#[derive(Clone, Debug)]
-#[derive(FromPyObject)]
+#[derive(Clone, Debug, FromPyObject, Serialize)]
+#[serde(untagged)]
 enum Command {
     Operation(u8),
     Element(Vec<u8>)
@@ -151,6 +230,162 @@ struct Script {
     commands: Vec<Command>
 }
 
+impl Serialize for Script {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer,
+    {
+        let len = self.commands.iter().fold(0, |sum, val| match val {
+            Command::Element(x) => sum + x.len() + 1,
+            _ => sum + 1,
+        });
+
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        for cmd in &self.commands {
+            seq.serialize_element(cmd)?
+        };
+        seq.end()
+    }
+}
+
+struct ScriptVisitor;
+impl<'de> Visitor<'de> for ScriptVisitor {
+    type Value = Script;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("A script where values < 75 are Elements and values between 78 and 2^8 are considered Commands")
+    }
+
+    fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error> where V: SeqAccess<'de>,
+    {
+        let mut commands: Vec<Command> = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+
+        while let Some(current) = seq.next_element::<u8>()? {
+            match current {
+                1..=75 => {
+                    let mut v = vec![0; current.into()];
+                    v.fill_with(|| seq.next_element().unwrap().unwrap());
+                    commands.push(Command::Element(v));
+                }
+                76..=77 => unimplemented!("{}", current),
+                _ => {
+                    commands.push(Command::Operation(current))
+                }
+            }
+        }
+        Ok(Script { commands })
+    }
+}
+
+impl<'de> Deserialize<'de> for Script {
+    fn deserialize<D>(deserializer: D) -> Result<Script, D::Error> where D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ScriptVisitor)
+    }
+}
+
+#[pymethods]
+impl Script {
+    #[new]
+    fn new(commands: Vec<Command>) -> Self {
+        Script { commands }
+    }
+
+    // #[staticmethod]
+    // fn p2pkh_script(h160: Command) {
+    //     // OP_DUP, OP_HASH160, h160, OP_EQUALVERIFY, OP_CHECKSIG
+    // }
+
+    fn serialize<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let bytes = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .serialize(&self).unwrap();
+
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[staticmethod]
+    fn deserialize(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        let script = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(bytes).unwrap();
+
+        Ok(script)
+    }
+
+    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let mut bytes: Vec<u8> = Vec::new();
+        // Operations get encoded as a single byte
+        // Elements get encoded as encoding length + element
+        for cmd in self.commands.iter() {
+            match cmd {
+                Command::Operation(x) => bytes.push(*x),
+                Command::Element(x) => { 
+                    bytes.push(x.len() as u8);
+                    bytes.extend(x);
+                }
+            };
+        }
+
+        // prepend the encoded length of the script
+        let mut prefix: Vec<u8> = Vec::new();
+        prefix.push(bytes.len() as u8); // varint
+        prefix.extend(bytes);
+
+        Ok(PyBytes::new(py, &prefix))
+    }
+
+    fn evaluate(&self, z: BigInt) -> bool {
+        let mut stack: Vec<Vec<u8>> = Vec::new();
+
+        self.commands.iter().all(|cmd| {
+            match cmd {
+                Command::Operation(x) => {
+                    match x {
+                        118 => op_dup(&mut stack),
+                        136 => op_equalverify(&mut stack),
+                        169 => op_hash160(&mut stack),
+                        172 => op_checksig(&mut stack, &z),
+                        _ => panic!("unrecognized op: {}", x)
+                    }
+                }
+                Command::Element(x) => { stack.push(x.to_vec()); true }
+            }
+        })
+    }
+}
+
+impl Script {
+    fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error>  {
+        let length = ReadExt::read_varint(stream)?;
+        let mut commands: Vec<Command> = Vec::new();
+
+        let mut count = 0;
+        while count < length {
+            let current = ReadExt::read_typed::<u8>(stream)?;
+            count += 1;
+            match current {
+                1..=75 => {
+                    // Element
+                    let mut v: Vec<u8> = vec![0u8; current.into()];
+                    stream.read_exact(&mut v)?;
+                    commands.push(Command::Element(v));
+                    count += current;
+                },
+                76..=77 => panic!("Not implemented {}", current),
+                _ => {
+                    // command
+                    commands.push(Command::Operation(current));
+                }
+            }
+        }
+
+        if count != length {
+            panic!("Uneven lengths {} and {}", count, length)
+        }
+
+        Ok(Script { commands })
+    }
+}
+
 #[pyclass]
 struct Signature {
     #[pyo3(get)]
@@ -159,11 +394,92 @@ struct Signature {
     s: BigInt
 }
 
+impl Serialize for Signature {
+    // According to https://en.bitcoin.it/wiki/BIP_0062#DER_encoding DER has the following format:
+    // 0x30 [total-length] 0x02 [R-length] [R] 0x02 [S-length] [S] [sighash-type]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer,
+    {
+        let der = |x: &BigInt| -> Vec<u8> {
+            let mut v = x.to_signed_bytes_le();
+            // resize to 32 bytes
+            v.resize(32, 0);
+            v.reverse(); // switch endianness
+            // remove leading zeros
+            v = v.into_iter().skip_while(|&x| x == 0u8).collect();
+            // prepend a single 0x00 byte if first byte >= 0x80
+            if v[0] >= 0x80 {
+                v.insert(0, 0x00);
+            }
+            v
+        };
+
+        let content: Vec<Vec<u8>> = [&self.r, &self.s].iter().map(|x| der(x)).collect();
+        let total_length = content.iter().flatten().collect::<Vec<_>>().len() as u8 + 2*2;
+
+        let mut tup = serializer.serialize_tuple(8)?;
+        tup.serialize_element::<u8>(&0x30)?;
+        tup.serialize_element::<u8>(&total_length)?;
+        for elem in content {
+            tup.serialize_element::<u8>(&0x02)?;
+            tup.serialize_element(&elem)?;
+        }
+        tup.end()
+    }
+}
+
+struct SignatureVisitor;
+impl<'de> Visitor<'de> for SignatureVisitor {
+    type Value = Signature;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Signature")
+    }
+
+    fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error> where V: SeqAccess<'de>,
+    {
+        assert_eq!(Some(8), seq.size_hint());
+        assert_eq!(Some(0x30), seq.next_element::<u8>()?);
+        let _total_length = seq.next_element::<u8>()?.unwrap();
+        assert_eq!(Some(0x02), seq.next_element::<u8>()?);
+        let r: Vec<u8> = seq.next_element()?.unwrap();
+        let r = BigInt::from_bytes_be(Sign::Plus, &r);
+        assert_eq!(Some(0x02), seq.next_element::<u8>()?);
+        let s: Vec<u8> = seq.next_element()?.unwrap();
+        let s = BigInt::from_signed_bytes_be(&s);
+
+        Ok(Signature { r, s })
+    }
+}
+
+impl<'de> Deserialize<'de> for Signature {
+    fn deserialize<D>(deserializer: D) -> Result<Signature, D::Error> where D: Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(8, SignatureVisitor)
+    }
+}
+
 #[pymethods]
 impl Signature {
     #[new]
     fn new(r: BigInt, s: BigInt) -> Self {
         Signature { r, s }
+    }
+
+    fn serialize<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let bytes = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .serialize(&self).unwrap();
+
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[staticmethod]
+    fn deserialize(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        let sig = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(bytes).unwrap();
+
+        Ok(sig)
     }
 
     fn encode(&self, py: Python) -> PyObject {
@@ -287,100 +603,6 @@ fn op_checksig(stack: &mut Vec<Vec<u8>>, z: &BigInt) -> bool {
     result
 }
 
-#[pymethods]
-impl Script {
-    #[new]
-    fn new(commands: Vec<Command>) -> Self {
-        Script { commands }
-    }
-
-    // #[staticmethod]
-    // fn p2pkh_script(h160: Command) {
-    //     // OP_DUP, OP_HASH160, h160, OP_EQUALVERIFY, OP_CHECKSIG
-    // }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let mut bytes: Vec<u8> = Vec::new();
-        // Operations get encoded as a single byte
-        // Elements get encoded as encoding length + element
-        for cmd in self.commands.iter() {
-            match cmd {
-                Command::Operation(x) => bytes.push(*x),
-                Command::Element(x) => { 
-                    bytes.push(x.len() as u8);
-                    bytes.extend(x);
-                }
-            };
-        }
-
-        // prepend the encoded length of the script
-        let mut prefix: Vec<u8> = Vec::new();
-        prefix.push(bytes.len() as u8);
-        prefix.extend(bytes);
-
-        Ok(PyBytes::new(py, &prefix))
-    }
-
-    fn evaluate(&self, z: BigInt) -> bool {
-        let mut stack: Vec<Vec<u8>> = Vec::new();
-
-        self.commands.iter().all(|cmd| {
-            match cmd {
-                Command::Operation(x) => {
-                    match x {
-                        118 => op_dup(&mut stack),
-                        136 => op_equalverify(&mut stack),
-                        169 => op_hash160(&mut stack),
-                        172 => op_checksig(&mut stack, &z),
-                        _ => panic!("unrecognized op: {}", x)
-                    }
-                }
-                Command::Element(x) => { stack.push(x.to_vec()); true }
-            }
-        })
-    }
-}
-
-impl Script {
-    fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error>  {
-        let length = ReadExt::read_varint(stream)?;
-        let mut commands: Vec<Command> = Vec::new();
-
-        let mut count = 0;
-        while count < length {
-            let current = ReadExt::read_typed::<u8>(stream)?;
-            count += 1;
-            match current {
-                1..=75 => {
-                    // Element
-                    let mut v: Vec<u8> = vec![0u8; current.into()];
-                    stream.read_exact(&mut v)?;
-                    commands.push(Command::Element(v));
-                    count += current;
-                },
-                76..=77 => panic!("Not implemented {}", current),
-                _ => {
-                    // command
-                    commands.push(Command::Operation(current));
-                }
-            }
-        }
-
-        if count != length {
-            panic!("Uneven lengths {} and {}", count, length)
-        }
-
-        Ok(Script { commands })
-    }
-}
-
-#[pyproto]
-impl PyObjectProtocol for Script {
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!("<Script with commands={:?}>", self.commands))
-    }
-}
-
 #[pyproto]
 impl PyNumberProtocol for Script {
     fn __add__(lhs: Script, rhs: Script) -> Script {
@@ -390,23 +612,57 @@ impl PyNumberProtocol for Script {
 }
 
 #[pyclass]
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TxIn {
-    prev_tx: Vec<u8>, // hash256 of UTXO as big endian (32-byte)
+    prev_tx: [u8; 32], // hash256 of UTXO as big endian (32-byte)
     #[pyo3(get)]
+    #[serde(with = "fix_u32")]
     prev_idx: u32, // the index number of the UTXO to be spent (4-byte)
     #[pyo3(get, set)]
     script_sig: Script, // UTXO unlocking script (var size)
     #[pyo3(get)]
+    #[serde(with = "fix_u32")]
     sequence: u32 // not used
+}
+
+pub mod fix_u32 {
+    // simulate a fixed size integer by representing it as an array of bytes
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u32, D::Error> where D: Deserializer<'de>
+    {
+        Ok(u32::from_le_bytes(<[u8; 4]>::deserialize(deserializer)?))
+    }
+
+    pub fn serialize<S>(value: &u32, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer
+    {
+        value.to_le_bytes().serialize(serializer)
+    }
 }
 
 #[pymethods]
 impl TxIn {
     #[new]
     #[args(sequence=0xffffffffu32)]
-    fn new(prev_tx: Vec<u8>, prev_idx: u32, script_sig: Script, sequence: u32) -> Self {
-        TxIn { prev_tx, prev_idx, script_sig, sequence }
+    fn new(prev_tx: [u8; 32], prev_idx: u32, script_sig: Script, sequence: u32) -> Self {
+        TxIn { prev_tx, prev_idx: prev_idx, script_sig, sequence: sequence }
+    }
+
+    fn serialize<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let bytes = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .serialize(&self).unwrap();
+
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[staticmethod]
+    fn deserialize(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        let value = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(bytes).unwrap();
+
+        Ok(value)
     }
 
     fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
@@ -430,24 +686,39 @@ impl TxIn {
     fn decode(stream: &mut BufReader<&[u8]>) -> Result<Self, std::io::Error> {
         let mut prev_tx = [0; 32];
         stream.read_exact(&mut prev_tx)?;
-        let prev_tx = prev_tx.to_vec();
 
         let prev_idx = ReadExt::read_typed::<u32>(stream)?;
         let script_sig = Script::decode(stream)?;
 
         let sequence = ReadExt::read_typed::<u32>(stream)?;
 
-        Ok(TxIn { prev_tx, prev_idx, script_sig, sequence })
+        Ok(TxIn::new(prev_tx, prev_idx, script_sig, sequence))
     }
 }
 
 #[pyclass]
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TxOut {
     #[pyo3(get)]
+    #[serde(with = "fix_u64")]
     amount: u64, // in 1e-8 units (8 bytes)
     #[pyo3(get, set)]
     script_pubkey: Script
+}
+
+pub mod fix_u64 {
+    // simulate a fixed size integer by representing it as an array of bytes
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error> where D: Deserializer<'de>
+    {
+        Ok(u64::from_le_bytes(<[u8; 8]>::deserialize(deserializer)?))
+    }
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer
+    {
+        value.to_le_bytes().serialize(serializer)
+    }
 }
 
 #[pymethods]
@@ -455,6 +726,23 @@ impl TxOut {
     #[new]
     fn new(amount: u64, script_pubkey: Script) -> Self {
         TxOut { amount, script_pubkey}
+    }
+
+    fn serialize<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let bytes = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .serialize(&self).unwrap();
+
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[staticmethod]
+    fn deserialize(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        let value = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(bytes).unwrap();
+
+        Ok(value)
     }
 
     fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
@@ -477,14 +765,17 @@ impl TxOut {
 }
 
 #[pyclass]
+#[derive(Serialize, Deserialize)]
 struct Tx {
     #[pyo3(get)]
+    #[serde(with = "fix_u32")]
     version: u32, // version (4 bytes)
     #[pyo3(get, set)]
     tx_ins: Vec<TxIn>,
     #[pyo3(get)]
     tx_outs: Vec<TxOut>,
     #[pyo3(get)]
+    #[serde(with = "fix_u32")]
     locktime: u32
 }
 
@@ -518,6 +809,23 @@ impl Tx {
     #[args(locktime=0u32)]
     fn new(version: u32, tx_ins: Vec<TxIn>, tx_outs: Vec<TxOut>, locktime: u32) -> Self {
         Tx { version, tx_ins, tx_outs, locktime}
+    }
+
+    fn serialize<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
+        let bytes = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .serialize(&self).unwrap();
+
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[staticmethod]
+    fn deserialize(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        let value = DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(bytes).unwrap();
+
+        Ok(value)
     }
 
     fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
