@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 
 use quote::quote;
 // use proc_macro2::Span;
-// use syn::{parse_macro_input, DeriveInput, Ident, Lit, Meta, MetaList, NestedMeta};
+use syn::{parse_macro_input, DeriveInput, Ident, Lit, Meta, MetaList, NestedMeta};
 use quote::ToTokens;
 
 #[proc_macro_attribute]
@@ -39,4 +39,21 @@ pub fn serdes(_args: TokenStream, input: TokenStream) -> TokenStream {
     }.into()).unwrap());
 
     item.into_token_stream().into()
+}
+
+#[proc_macro_derive(Repr)]
+pub fn derive_repr(item: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(item as DeriveInput);
+    let name = &ast.ident;
+
+    let token_stream = quote! {
+        #[pyproto]
+        impl PyObjectProtocol for #name {
+            fn __repr__(&self) -> PyResult<String> {
+                Ok(format!("{:#?}", self))
+            }
+        }
+    };
+
+    TokenStream::from(token_stream)
 }
