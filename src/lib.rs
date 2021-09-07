@@ -126,28 +126,12 @@ impl<'de> Deserialize<'de> for Point {
     }
 }
 
+#[bitcoin_macros::serdes]
 #[pymethods]
 impl Point {
     #[new]
     fn new(x: BigInt, y: BigInt) -> Self {
         Point { x, y }
-    }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let bytes = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .serialize(&self).unwrap();
-
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    #[staticmethod]
-    fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        let script = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(bytes).unwrap();
-
-        Ok(script)
     }
 
     fn address(&self, py: Python) -> PyResult<String> {
@@ -261,6 +245,7 @@ impl<'de> Deserialize<'de> for Script {
     }
 }
 
+#[bitcoin_macros::serdes]
 #[pymethods]
 impl Script {
     #[new]
@@ -272,23 +257,6 @@ impl Script {
     // fn p2pkh_script(h160: Command) {
     //     // OP_DUP, OP_HASH160, h160, OP_EQUALVERIFY, OP_CHECKSIG
     // }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let bytes = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .serialize(&self).unwrap();
-
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    #[staticmethod]
-    fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        let script = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(bytes).unwrap();
-
-        Ok(script)
-    }
 
     fn evaluate(&self, z: BigInt) -> bool {
         let mut stack: Vec<Vec<u8>> = Vec::new();
@@ -382,28 +350,12 @@ impl<'de> Deserialize<'de> for Signature {
     }
 }
 
+#[bitcoin_macros::serdes]
 #[pymethods]
 impl Signature {
     #[new]
     fn new(r: BigInt, s: BigInt) -> Self {
         Signature { r, s }
-    }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let bytes = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .serialize(&self).unwrap();
-
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    #[staticmethod]
-    fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        let sig = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(bytes).unwrap();
-
-        Ok(sig)
     }
 
     #[staticmethod]
@@ -513,29 +465,13 @@ pub mod fix_u32 {
     }
 }
 
+#[bitcoin_macros::serdes]
 #[pymethods]
 impl TxIn {
     #[new]
     #[args(sequence=0xffffffffu32)]
     fn new(prev_tx: [u8; 32], prev_idx: u32, script_sig: Script, sequence: u32) -> Self {
         TxIn { prev_tx, prev_idx: prev_idx, script_sig, sequence: sequence }
-    }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let bytes = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .serialize(&self).unwrap();
-
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    #[staticmethod]
-    fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        let value = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(bytes).unwrap();
-
-        Ok(value)
     }
 
     #[getter]
@@ -569,28 +505,12 @@ pub mod fix_u64 {
     }
 }
 
+#[bitcoin_macros::serdes]
 #[pymethods]
 impl TxOut {
     #[new]
     fn new(amount: u64, script_pubkey: Script) -> Self {
         TxOut { amount, script_pubkey}
-    }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let bytes = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .serialize(&self).unwrap();
-
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    #[staticmethod]
-    fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        let value = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(bytes).unwrap();
-
-        Ok(value)
     }
 }
 
@@ -609,29 +529,13 @@ struct Tx {
     locktime: u32
 }
 
+#[bitcoin_macros::serdes]
 #[pymethods]
 impl Tx {
     #[new]
     #[args(locktime=0u32)]
     fn new(version: u32, tx_ins: Vec<TxIn>, tx_outs: Vec<TxOut>, locktime: u32) -> Self {
         Tx { version, tx_ins, tx_outs, locktime}
-    }
-
-    fn encode<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes>  {
-        let bytes = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .serialize(&self).unwrap();
-
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    #[staticmethod]
-    fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        let value = DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(bytes).unwrap();
-
-        Ok(value)
     }
 
     fn id<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
