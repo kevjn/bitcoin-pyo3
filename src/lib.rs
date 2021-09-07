@@ -69,7 +69,7 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
 }
 
 #[pyclass]
-#[derive(Clone)]
+#[derive(Debug, Clone, bitcoin_macros::Repr)]
 struct Point {
     #[pyo3(get)]
     x: BigInt, // 32 bytes = 256 bits
@@ -151,13 +151,6 @@ impl Point {
 }
 
 #[pyproto]
-impl PyObjectProtocol for Point {
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!("<Point at x={}, y={}>", self.x, self.y))
-    }
-}
-
-#[pyproto]
 impl PyNumberProtocol for Point {
     fn __add__(p: Point, q: Point) -> Self {
         ecc_add(&p, &q)
@@ -168,11 +161,20 @@ impl PyNumberProtocol for Point {
     }
 }
 
-#[derive(Clone, Debug, FromPyObject, Serialize)]
+#[derive(Clone, FromPyObject, Serialize)]
 #[serde(untagged)]
 enum Command {
     Operation(u8),
     Element(Vec<u8>)
+}
+
+impl ::core::fmt::Debug for Command {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+        match self {
+            Command::Operation(x) => write!(f, "Operation({:?})", x),
+            Command::Element(x) => write!(f, "Element(0x{})", x.iter().map(|b| format!("{:02X}", b)).collect::<String>() )
+        }
+    }
 }
 
 impl IntoPy<PyObject> for Command {
@@ -187,7 +189,7 @@ impl IntoPy<PyObject> for Command {
 }
 
 #[pyclass]
-#[derive(Clone)]
+#[derive(Debug, Clone, bitcoin_macros::Repr)]
 struct Script {
     #[pyo3(get)]
     commands: Vec<Command>
@@ -279,6 +281,7 @@ impl Script {
 }
 
 #[pyclass]
+#[derive(Debug, bitcoin_macros::Repr)]
 struct Signature {
     #[pyo3(get)]
     r: BigInt,
@@ -437,7 +440,7 @@ impl PyNumberProtocol for Script {
 }
 
 #[pyclass]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, bitcoin_macros::Repr, Clone, Serialize, Deserialize)]
 struct TxIn {
     prev_tx: [u8; 32], // hash256 of UTXO as big endian (32-byte)
     #[pyo3(get)]
@@ -481,7 +484,7 @@ impl TxIn {
 }
 
 #[pyclass]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, bitcoin_macros::Repr, Clone, Serialize, Deserialize)]
 struct TxOut {
     #[pyo3(get)]
     #[serde(with = "fix_u64")]
@@ -515,7 +518,7 @@ impl TxOut {
 }
 
 #[pyclass]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, bitcoin_macros::Repr, Serialize, Deserialize)]
 struct Tx {
     #[pyo3(get)]
     #[serde(with = "fix_u32")]
