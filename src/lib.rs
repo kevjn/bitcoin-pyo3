@@ -459,10 +459,25 @@ pub mod fix_u32 {
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<u32, D::Error> where D: Deserializer<'de>
     {
-        Ok(u32::from_le_bytes(<[u8; 4]>::deserialize(deserializer)?))
+        Ok(u32::from_le_bytes(<[u8; std::mem::size_of::<u32>()]>::deserialize(deserializer)?))
     }
 
     pub fn serialize<S>(value: &u32, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer
+    {
+        value.to_le_bytes().serialize(serializer)
+    }
+}
+
+pub mod fix_u64 {
+    // simulate a fixed size integer by representing it as an array of bytes
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error> where D: Deserializer<'de>
+    {
+        Ok(u64::from_le_bytes(<[u8; std::mem::size_of::<u64>()]>::deserialize(deserializer)?))
+    }
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer
     {
         value.to_le_bytes().serialize(serializer)
     }
@@ -491,21 +506,6 @@ struct TxOut {
     amount: u64, // in 1e-8 units (8 bytes)
     #[pyo3(get, set)]
     script_pubkey: Script
-}
-
-pub mod fix_u64 {
-    // simulate a fixed size integer by representing it as an array of bytes
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error> where D: Deserializer<'de>
-    {
-        Ok(u64::from_le_bytes(<[u8; 8]>::deserialize(deserializer)?))
-    }
-
-    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer
-    {
-        value.to_le_bytes().serialize(serializer)
-    }
 }
 
 #[bitcoin_macros::serdes]
@@ -554,7 +554,7 @@ impl Tx {
 
         let prev_script_pubkey = Script::decode(&prev_script_pubkey).unwrap();
 
-        for i in 0..self.tx_ins.len() {
+        std::ops::Range { start: 0, end: self.tx_ins.len() }.all(|i| {
             let script_sig = &self.tx_ins[i].script_sig.clone();
 
             self.tx_ins[i].script_sig = prev_script_pubkey.clone();
@@ -571,13 +571,9 @@ impl Tx {
 
             self.tx_ins[i].script_sig = script_sig.clone(); // revert back
 
-            let commands = [script_sig.commands.clone(), prev_script_pubkey.commands.clone()].concat();
-            let combined = Script { commands };
-            if !combined.evaluate(z) {
-                return false;
-            }
-        }
-        true
+            let combined = Script::__add__(script_sig.clone(), prev_script_pubkey.clone());
+            combined.evaluate(z)
+        })
     }
 }
 
