@@ -62,6 +62,9 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<TxOut>()?;
     m.add_class::<Tx>()?;
 
+    m.add_class::<VersionMessage>()?;
+    m.add_class::<NetworkEnvelope>()?;
+
     m.add_function(wrap_pyfunction!(hash160, m)?)?;
     m.add_function(wrap_pyfunction!(hash256, m)?)?;
 
@@ -453,6 +456,21 @@ struct TxIn {
     sequence: u32 // not used
 }
 
+pub mod fix_u16_be {
+    // simulate a fixed size integer by representing it as an array of bytes
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u16, D::Error> where D: Deserializer<'de>
+    {
+        Ok(u16::from_be_bytes(<[u8; std::mem::size_of::<u16>()]>::deserialize(deserializer)?))
+    }
+
+    pub fn serialize<S>(value: &u16, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer
+    {
+        value.to_be_bytes().serialize(serializer)
+    }
+}
+
 pub mod fix_u32 {
     // simulate a fixed size integer by representing it as an array of bytes
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -577,6 +595,135 @@ impl Tx {
     }
 }
 
+// ========== Networking ==========
+
+#[pyclass]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NetAddr {
+    //
+    // https://en.bitcoin.it/wiki/Protocol_documentation#Network_address
+    //
+
+    #[serde(with = "fix_u64")]
+    services: u64,
+    ip: [u8; 16],
+    #[serde(with = "fix_u16_be")]
+    port: u16,
+}
+
+#[pyclass]
+#[derive(Debug, Clone, bitcoin_macros::Repr, Serialize, Deserialize)]
+struct VersionMessage {
+    //
+    // https://en.bitcoin.it/wiki/Protocol_documentation#version
+    // When a node creates an outgoing connection, it will immediately advertise
+    // its version. The remote node will respond with its version. No further
+    // communication is possible until both peers have exchanged their version.
+    //
+
+    #[serde(with = "fix_u32")]
+    #[pyo3(get)]
+    version: u32, // version (4 bytes)
+    #[serde(with = "fix_u64")]
+    services: u64, // services (8 bytes)
+    #[serde(with = "fix_u64")]
+    timestamp: u64, // Unix timestamp (8 bytes)
+    receiver: NetAddr,
+    sender: NetAddr,
+    #[serde(with = "fix_u64")]
+    nonce: u64,
+    user_agent: Vec<u8>,
+    #[serde(with = "fix_u32")]
+    latest_block: u32,
+    relay: u8,
+}
+
+const DEFAULT_NET_ADDR: NetAddr = NetAddr { services: 0, ip: [0,0,0,0,0,0,0,0,0,0,0xff,0xff,0,0,0,0], port: 8333 };
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl VersionMessage {
+    #[new]
+    #[args(version=70015, services=0, receiver="DEFAULT_NET_ADDR", sender="DEFAULT_NET_ADDR", 
+           latest_block=0, relay=0)]
+    fn new(timestamp: u64, nonce: u64, user_agent: Vec<u8>,
+           version: u32, services: u64, receiver: NetAddr, 
+           sender: NetAddr, latest_block: u32, relay: u8) -> Self {
+        VersionMessage { version, services, timestamp, receiver, sender, nonce, user_agent, latest_block, relay }
+    }
+}
+
+#[pyclass]
+#[derive(Debug, bitcoin_macros::Repr)]
+struct NetworkEnvelope {
+    #[pyo3(get)]
+    magic: [u8; 4],
+    #[pyo3(get)]
+    command: [u8; 12],
+    #[pyo3(get)]
+    payload: PyObject,
+}
+
+impl Serialize for NetworkEnvelope {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer,
+    {
+        let mut tup = serializer.serialize_tuple(5)?;
+        tup.serialize_element::<[u8; 4]>(&self.magic)?;
+        tup.serialize_element::<[u8; 12]>(&self.command)?;
+        Python::with_gil(|py| {
+            let payload = match &self.command {
+                b"version\x00\x00\x00\x00\x00" => self.payload.extract::<VersionMessage>(py).unwrap(),
+                _ => unimplemented!("{}", std::str::from_utf8(&self.command).unwrap())
+            };
+            let payload_bytes = payload.encode(py).unwrap().as_bytes();
+            tup.serialize_element::<[u8; 4]>(&(payload_bytes.len() as u32).to_le_bytes()).unwrap();
+            tup.serialize_element::<[u8; 4]>(&hash256(payload_bytes)[..4].try_into().unwrap()).unwrap();
+            tup.serialize_element(&payload).unwrap();
+        });
+        tup.end()
+    }
+}
+
+struct NetworkEnvelopeVisitor;
+impl<'de> Visitor<'de> for NetworkEnvelopeVisitor {
+        type Value = NetworkEnvelope;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("NetworkEnvelope")
+    }
+
+    fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error> where V: SeqAccess<'de>,
+    {
+        assert_eq!(Some(5), seq.size_hint());
+        let magic = seq.next_element::<[u8; 4]>()?.unwrap();
+        let command = seq.next_element::<[u8; 12]>()?.unwrap();
+
+        let _payload_len = seq.next_element::<[u8; 4]>()?.unwrap();
+        let payload_checksum = seq.next_element::<[u8; 4]>()?.unwrap();
+        let payload = Python::with_gil(|py| {
+            let payload  = match &command {
+                b"version\x00\x00\x00\x00\x00" => seq.next_element::<VersionMessage>().unwrap().unwrap(),
+                _ => unimplemented!("{}", std::str::from_utf8(&command).unwrap())
+            };
+            assert_eq!(hash256(payload.encode(py).unwrap().as_bytes())[..4], payload_checksum);
+            payload.into_py(py)
+        });
+
+        Ok(NetworkEnvelope {magic, command, payload})
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<NetworkEnvelope, D::Error> where D: Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(5, NetworkEnvelopeVisitor)
+    }
+}
+
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl NetworkEnvelope {}
 
 fn modinv(n: &BigInt, p: &BigInt) -> BigInt {
     // TODO: use binary exponentiation for modinv
