@@ -670,16 +670,14 @@ impl Serialize for NetworkEnvelope {
         let mut tup = serializer.serialize_tuple(5)?;
         tup.serialize_element::<[u8; 4]>(&self.magic)?;
         tup.serialize_element::<[u8; 12]>(&self.command)?;
-        Python::with_gil(|py| {
-            let payload = match &self.command {
-                b"version\x00\x00\x00\x00\x00" => self.payload.extract::<VersionMessage>(py).unwrap(),
-                _ => unimplemented!("{}", std::str::from_utf8(&self.command).unwrap())
-            };
-            let payload_bytes = payload.encode(py).unwrap().as_bytes();
-            tup.serialize_element::<[u8; 4]>(&(payload_bytes.len() as u32).to_le_bytes()).unwrap();
-            tup.serialize_element::<[u8; 4]>(&hash256(payload_bytes)[..4].try_into().unwrap()).unwrap();
-            tup.serialize_element(&payload).unwrap();
-        });
+
+        let bytes = Python::with_gil(|py| self.payload.call_method0(py, "encode")
+                                    .unwrap().extract::<&PyBytes>(py).unwrap().as_bytes().to_owned());
+            
+        tup.serialize_element::<[u8; 4]>(&(bytes.len() as u32).to_le_bytes()).unwrap();
+        tup.serialize_element::<[u8; 4]>(&hash256(&bytes)[..4].try_into().unwrap()).unwrap();
+        bytes.iter().for_each(|x| tup.serialize_element(&x).unwrap());
+
         tup.end()
     }
 }
