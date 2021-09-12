@@ -23,6 +23,9 @@ use serde::ser::{Serializer, SerializeSeq, SerializeTuple};
 use serde::de::{Deserializer, Visitor, SeqAccess};
 use bincode::{DefaultOptions, Options};
 
+// networking
+use std::net::TcpStream;
+
 // convert Vec<T> to an array
 use std::convert::TryInto;
 
@@ -64,6 +67,7 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
 
     m.add_class::<VersionMessage>()?;
     m.add_class::<NetworkEnvelope>()?;
+    m.add_class::<Node>()?;
 
     m.add_function(wrap_pyfunction!(hash160, m)?)?;
     m.add_function(wrap_pyfunction!(hash256, m)?)?;
@@ -599,6 +603,14 @@ impl Tx {
 
 #[pyclass]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct VerAckMessage {}
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl VerAckMessage {}
+
+#[pyclass]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct NetAddr {
     //
     // https://en.bitcoin.it/wiki/Protocol_documentation#Network_address
@@ -658,7 +670,6 @@ impl VersionMessage {
 struct NetworkEnvelope {
     #[pyo3(get)]
     magic: [u8; 4],
-    #[pyo3(get)]
     command: [u8; 12],
     #[pyo3(get)]
     payload: PyObject,
@@ -698,13 +709,15 @@ impl<'de> Visitor<'de> for NetworkEnvelopeVisitor {
 
         let _payload_len = seq.next_element::<[u8; 4]>()?.unwrap();
         let payload_checksum = seq.next_element::<[u8; 4]>()?.unwrap();
+
         let payload = Python::with_gil(|py| {
-            let payload  = match &command {
-                b"version\x00\x00\x00\x00\x00" => seq.next_element::<VersionMessage>().unwrap().unwrap(),
+            let payload = match command.as_ref() {
+                b"version\x00\x00\x00\x00\x00" => seq.next_element::<VersionMessage>().unwrap().into_py(py),
+                b"verack\x00\x00\x00\x00\x00\x00" => seq.next_element::<VerAckMessage>().unwrap().into_py(py),
                 _ => unimplemented!("{}", std::str::from_utf8(&command).unwrap())
             };
-            assert_eq!(hash256(payload.encode(py).unwrap().as_bytes())[..4], payload_checksum);
-            payload.into_py(py)
+            assert_eq!(hash256(payload.call_method0(py, "encode").unwrap().extract::<&PyBytes>(py).unwrap().as_bytes())[..4], payload_checksum);
+            payload
         });
 
         Ok(NetworkEnvelope {magic, command, payload})
@@ -721,7 +734,47 @@ impl<'de> Deserialize<'de> for NetworkEnvelope {
 
 #[bitcoin_macros::serdes]
 #[pymethods]
-impl NetworkEnvelope {}
+impl NetworkEnvelope {
+    #[getter]
+    fn command(&self) -> String {
+        let res = std::str::from_utf8(&self.command).expect("Found invalid UTF-8");
+        let res = res.trim_matches(char::from(0));
+        res.to_ascii_lowercase()
+    }
+}
+
+#[pyclass]
+struct Node {
+    stream: TcpStream
+}
+
+#[pymethods]
+impl Node {
+
+    #[staticmethod]
+    fn from_raw_fd(raw_fd: i32) -> Result<Self, std::io::Error> {
+        let stream = unsafe { <TcpStream as std::os::unix::prelude::FromRawFd>::from_raw_fd(raw_fd) };
+        Ok(Node { stream })
+    }
+
+    fn handshake(&self, py: Python) {
+        let version = VersionMessage::new(0, 0, b"/programmingbitcoin:0.1/".to_vec(), 70015, 
+                                0, DEFAULT_NET_ADDR, DEFAULT_NET_ADDR, 0, 0);
+        
+        let network_msg = NetworkEnvelope { magic: b"\x0b\x11\x09\x07".to_owned(), command: b"version\x00\x00\x00\x00\x00".to_owned(), payload: version.into_py(py) };
+
+        // send our version to connected peer
+        DefaultOptions::new().with_varint_encoding().serialize_into(&self.stream, &network_msg).unwrap();
+
+        // receive version from connected peer
+        let network_msg: NetworkEnvelope = DefaultOptions::new().with_varint_encoding().deserialize_from(&self.stream).unwrap();
+        let peer_version: VersionMessage = network_msg.payload.extract(py).unwrap();
+
+        // send VerAck message back and forth
+        DefaultOptions::new().with_varint_encoding().deserialize_from::<&TcpStream, VerAckMessage>(&self.stream).unwrap();
+        DefaultOptions::new().with_varint_encoding().serialize_into(&self.stream, &VerAckMessage{}).unwrap();
+    }
+}
 
 fn modinv(n: &BigInt, p: &BigInt) -> BigInt {
     // TODO: use binary exponentiation for modinv
