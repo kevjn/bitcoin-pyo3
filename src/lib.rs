@@ -64,6 +64,7 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<TxIn>()?;
     m.add_class::<TxOut>()?;
     m.add_class::<Tx>()?;
+    m.add_class::<Block>()?;
 
     m.add_class::<VersionMessage>()?;
     m.add_class::<NetworkEnvelope>()?;
@@ -596,6 +597,57 @@ impl Tx {
             let combined = Script::__add__(script_sig.clone(), prev_script_pubkey.clone());
             combined.evaluate(z)
         })
+    }
+}
+
+#[pyclass]
+#[derive(Debug, bitcoin_macros::Repr, Serialize, Deserialize)]
+struct Block {
+    #[pyo3(get)]
+    #[serde(with = "fix_u32")]
+    version: u32,
+    prev_block: [u8; 32],
+    merkle_root: [u8; 32],
+    #[pyo3(get)]
+    #[serde(with = "fix_u32")]
+    timestamp: u32,
+    #[pyo3(get)]
+    #[serde(with = "fix_u32")]
+    bits: u32,
+    #[pyo3(get)]
+    #[serde(with = "fix_u32")]
+    nonce: u32
+}
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl Block {
+    #[getter]
+    fn prev_block<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
+        Ok(PyBytes::new(py, &self.prev_block))
+    }
+    #[getter]
+    fn merkle_root<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
+        Ok(PyBytes::new(py, &self.merkle_root))
+    }
+
+    fn id<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
+        let mut result = hash256(self.encode(py).unwrap().as_bytes());
+        result.reverse();
+        Ok(PyBytes::new(py, &result))
+    }
+
+    fn target(&self) -> BigInt {
+        // calculate target from bits
+        let bytes: [u8; 4] = self.bits.to_le_bytes();
+        let (exp, coeff) = bytes.split_last().unwrap();
+        let coeff = BigInt::from_bytes_le(Sign::Plus, coeff);
+        coeff * BigInt::from_bytes_le(Sign::Plus, &256u16.to_le_bytes()).pow((exp - 3).into())
+    }
+
+    fn validate(&self, py: Python) -> bool {
+        let id = BigInt::from_bytes_be(Sign::Plus, &hash256(self.encode(py).unwrap().as_bytes()));
+        id >= self.target()
     }
 }
 
