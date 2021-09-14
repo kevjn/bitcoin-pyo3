@@ -67,6 +67,8 @@ fn bitcoin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Block>()?;
 
     m.add_class::<VersionMessage>()?;
+    m.add_class::<HeadersMessage>()?;
+    m.add_class::<GetHeadersMessage>()?;
     m.add_class::<NetworkEnvelope>()?;
     m.add_class::<Node>()?;
 
@@ -541,7 +543,7 @@ impl TxOut {
 }
 
 #[pyclass]
-#[derive(Debug, bitcoin_macros::Repr, Serialize, Deserialize)]
+#[derive(Debug, Clone, bitcoin_macros::Repr, Serialize, Deserialize)]
 struct Tx {
     #[pyo3(get)]
     #[serde(with = "fix_u32")]
@@ -601,8 +603,8 @@ impl Tx {
 }
 
 #[pyclass]
-#[derive(Debug, bitcoin_macros::Repr, Serialize, Deserialize)]
-struct Block {
+#[derive(Debug, Clone, bitcoin_macros::Repr, Serialize, Deserialize)]
+struct BlockHeader {
     #[pyo3(get)]
     #[serde(with = "fix_u32")]
     version: u32,
@@ -616,12 +618,12 @@ struct Block {
     bits: u32,
     #[pyo3(get)]
     #[serde(with = "fix_u32")]
-    nonce: u32
+    nonce: u32,
 }
 
 #[bitcoin_macros::serdes]
 #[pymethods]
-impl Block {
+impl BlockHeader {
     #[getter]
     fn prev_block<'a>(&self, py: Python<'a>) -> PyResult<&'a PyBytes> {
         Ok(PyBytes::new(py, &self.prev_block))
@@ -651,7 +653,43 @@ impl Block {
     }
 }
 
+#[pyclass]
+#[derive(Debug, Clone, bitcoin_macros::Repr, Serialize, Deserialize)]
+struct Block {
+    header: BlockHeader,
+    transactions: Vec<Tx>
+}
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl Block {}
+
 // ========== Networking ==========
+
+#[pyclass]
+#[derive(Debug, Serialize, Deserialize)]
+struct GetHeadersMessage {
+    #[serde(with = "fix_u32")]
+    version: u32,
+    num_hashes: u8,
+    start_block: [u8; 32],
+    end_block: [u8; 32]
+}
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl GetHeadersMessage {}
+
+#[pyclass]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HeadersMessage {
+    #[pyo3(get)]
+    blocks: Vec<Block>,
+}
+
+#[bitcoin_macros::serdes]
+#[pymethods]
+impl HeadersMessage {}
 
 #[pyclass]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -766,6 +804,8 @@ impl<'de> Visitor<'de> for NetworkEnvelopeVisitor {
             let payload = match command.as_ref() {
                 b"version\x00\x00\x00\x00\x00" => seq.next_element::<VersionMessage>().unwrap().into_py(py),
                 b"verack\x00\x00\x00\x00\x00\x00" => seq.next_element::<VerAckMessage>().unwrap().into_py(py),
+                b"getheaders\x00\x00" => seq.next_element::<GetHeadersMessage>().unwrap().into_py(py),
+                b"headers\x00\x00\x00\x00\x00" => seq.next_element::<HeadersMessage>().unwrap().into_py(py),
                 _ => unimplemented!("{}", std::str::from_utf8(&command).unwrap())
             };
             assert_eq!(hash256(payload.call_method0(py, "encode").unwrap().extract::<&PyBytes>(py).unwrap().as_bytes())[..4], payload_checksum);
@@ -820,11 +860,28 @@ impl Node {
 
         // receive version from connected peer
         let network_msg: NetworkEnvelope = DefaultOptions::new().with_varint_encoding().deserialize_from(&self.stream).unwrap();
-        let peer_version: VersionMessage = network_msg.payload.extract(py).unwrap();
+        let _peer_version: VersionMessage = network_msg.payload.extract(py).unwrap();
 
-        // send VerAck message back and forth
-        DefaultOptions::new().with_varint_encoding().deserialize_from::<&TcpStream, VerAckMessage>(&self.stream).unwrap();
-        DefaultOptions::new().with_varint_encoding().serialize_into(&self.stream, &VerAckMessage{}).unwrap();
+        // receive VerAck message from peer
+        let network_msg: NetworkEnvelope = DefaultOptions::new().with_varint_encoding().deserialize_from(&self.stream).unwrap();
+        assert_eq!(network_msg.command(), "verack");
+
+        // send VerAck message to peer
+        let network_msg = NetworkEnvelope { magic: b"\x0b\x11\x09\x07".to_owned(), command: b"verack\x00\x00\x00\x00\x00\x00".to_owned(), payload: VerAckMessage{}.into_py(py) };
+        DefaultOptions::new().with_varint_encoding().serialize_into(&self.stream, &network_msg).unwrap();
+    }
+
+    fn get_blocks(&self, start_block: [u8; 32], py: Python) -> Vec<Block> {
+        let msg = GetHeadersMessage {version: 70015, num_hashes: 1, start_block, end_block: [0; 32]};
+        let network_msg = NetworkEnvelope { magic: b"\x0b\x11\x09\x07".to_owned(), command: b"getheaders\x00\x00".to_owned(), payload: msg.into_py(py) };
+        DefaultOptions::new().with_varint_encoding().serialize_into(&self.stream, &network_msg).unwrap();
+
+        let network_msg: NetworkEnvelope = DefaultOptions::new().with_varint_encoding().deserialize_from(&self.stream).unwrap();
+        println!("inside get_blocks: {}", network_msg.command());
+        assert_eq!(&network_msg.command, b"headers\x00\x00\x00\x00\x00");
+
+        let headers: HeadersMessage = network_msg.payload.extract(py).unwrap();
+        headers.blocks
     }
 }
 
